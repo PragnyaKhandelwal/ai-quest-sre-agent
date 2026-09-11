@@ -199,9 +199,12 @@ Directory, or in the "Configure Project" step during import). With Root Director
 `frontend`, Vercel only ever sees the Vite app. Then set `VITE_BACKEND_URL` to your deployed
 Render URL.
 
-**Live demo URLs:** _fill in after deploying —_
-- Frontend: `https://<your-app>.vercel.app`
-- Backend: `https://<your-app>.onrender.com`
+**Live demo URLs:**
+- Frontend (dashboard): https://ai-quest-sre-agent.vercel.app/
+- Backend (API + docs at `/docs`): https://sre-agent-backend-1c0i.onrender.com
+
+> Note: the backend is on Render's free tier, which spins down after inactivity — the first
+> request after a period of idleness may take ~30-60s to wake it up.
 
 ---
 

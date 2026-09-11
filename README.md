@@ -13,6 +13,23 @@ API keys for judging/demo purposes.
 
 ---
 
+## 🚀 Live Demo
+
+- **Dashboard (Frontend):** https://ai-quest-sre-agent.vercel.app
+- **API (Backend):** https://sre-agent-backend-1c0i.onrender.com
+- **Health Check:** https://sre-agent-backend-1c0i.onrender.com/health
+- **API Docs:** https://sre-agent-backend-1c0i.onrender.com/docs
+
+## Quick Test
+
+1. Open https://ai-quest-sre-agent.vercel.app
+2. Click "Simulate P1 Memory Leak" button
+3. Watch agent reasoning stream in real time
+4. Click "Simulate P1 DB Deadlock" — approve/reject the HITL gate
+5. Download RCA PDF after incident resolves
+
+---
+
 ## Architecture
 
 ```mermaid

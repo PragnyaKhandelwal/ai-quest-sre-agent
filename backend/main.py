@@ -9,23 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from agents import config
 from agents.pipeline import run_pipeline
 from agents.schemas import Alert
-
 from backend import store
 from backend.aims_logger import recent_events, total_tokens_used
 from backend.mock_generator import get_scenario, list_scenarios
 from backend.rca_pdf import render_rca_pdf
 from backend.store import StoreHooks
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("sre_agent.backend")
 
 app = FastAPI(
     title="Governed Multi-Agent SRE Incident Triage & Remediation",
@@ -40,6 +43,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all safety net: log every uncaught exception with a full
+    traceback so nothing fails silently, and never leak internals to the
+    client -- everything expected (404/409/422/503) is raised explicitly as
+    HTTPException elsewhere and never reaches this handler."""
+    logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=True)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +116,16 @@ async def ingest_alerts(payload: IngestPayload):
         raise HTTPException(status_code=400, detail="At least one alert is required.")
     incident_id = _new_incident_id()
     log_corpus = payload.logs or []
-    store.create_incident(incident_id, payload.alerts, log_corpus)
-    asyncio.create_task(_launch_pipeline(incident_id, payload.alerts, log_corpus))
+    try:
+        store.create_incident(incident_id, payload.alerts, log_corpus)
+        asyncio.create_task(_launch_pipeline(incident_id, payload.alerts, log_corpus))
+    except Exception:
+        logger.error("Failed to start pipeline for incident %s", incident_id, exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="Agent pipeline unavailable",
+            headers={"Retry-After": "30"},
+        )
     return {"incident_id": incident_id, "status": "pipeline_started"}
 
 
@@ -112,12 +133,22 @@ async def ingest_alerts(payload: IngestPayload):
 async def simulate(scenario: int):
     try:
         name, alerts, log_corpus = get_scenario(scenario)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Scenario must be 1-4")
 
     incident_id = _new_incident_id()
-    store.create_incident(incident_id, alerts, log_corpus, scenario=name)
-    asyncio.create_task(_launch_pipeline(incident_id, alerts, log_corpus))
+    try:
+        store.create_incident(incident_id, alerts, log_corpus, scenario=name)
+        asyncio.create_task(_launch_pipeline(incident_id, alerts, log_corpus))
+    except Exception:
+        logger.error(
+            "Failed to start pipeline for incident %s (scenario %s)", incident_id, scenario, exc_info=True
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="Agent pipeline unavailable",
+            headers={"Retry-After": "30"},
+        )
     return {"incident_id": incident_id, "scenario": name, "status": "pipeline_started"}
 
 
@@ -133,7 +164,7 @@ def list_incidents():
 def get_incident(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found.")
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
     return incident.to_public_dict()
 
 
@@ -141,7 +172,7 @@ def get_incident(incident_id: str):
 async def stream_incident(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found.")
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
 
     async def event_gen():
         # Replay everything we already have, then live-stream new steps.
@@ -200,17 +231,27 @@ def hitl_pending():
 
 @app.post("/hitl/{incident_id}/approve")
 def hitl_approve(incident_id: str, payload: HITLDecisionPayload):
-    req = store.resolve_hitl(incident_id, payload.request_id, approve=True, decided_by=payload.decided_by, note=payload.note)
-    if not req:
-        raise HTTPException(status_code=404, detail="HITL request not found or already resolved.")
+    try:
+        req = store.resolve_hitl(
+            incident_id, payload.request_id, approve=True, decided_by=payload.decided_by, note=payload.note
+        )
+    except store.HITLNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except store.HITLAlreadyDecidedError:
+        raise HTTPException(status_code=409, detail="Action already resolved")
     return {"request_id": req.request_id, "status": req.status.value}
 
 
 @app.post("/hitl/{incident_id}/reject")
 def hitl_reject(incident_id: str, payload: HITLDecisionPayload):
-    req = store.resolve_hitl(incident_id, payload.request_id, approve=False, decided_by=payload.decided_by, note=payload.note)
-    if not req:
-        raise HTTPException(status_code=404, detail="HITL request not found or already resolved.")
+    try:
+        req = store.resolve_hitl(
+            incident_id, payload.request_id, approve=False, decided_by=payload.decided_by, note=payload.note
+        )
+    except store.HITLNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except store.HITLAlreadyDecidedError:
+        raise HTTPException(status_code=409, detail="Action already resolved")
     return {"request_id": req.request_id, "status": req.status.value}
 
 
@@ -221,9 +262,9 @@ def hitl_reject(incident_id: str, payload: HITLDecisionPayload):
 def get_rca(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found.")
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
     if not incident.rca:
-        raise HTTPException(status_code=404, detail="RCA not yet generated for this incident.")
+        raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
     return incident.rca.model_dump()
 
 
@@ -231,10 +272,14 @@ def get_rca(incident_id: str):
 def get_rca_pdf(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found.")
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
     if not incident.rca:
-        raise HTTPException(status_code=404, detail="RCA not yet generated for this incident.")
-    pdf_bytes = render_rca_pdf(incident.rca)
+        raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
+    try:
+        pdf_bytes = render_rca_pdf(incident.rca)
+    except Exception:
+        logger.error("Failed to render RCA PDF for incident %s", incident_id, exc_info=True)
+        raise HTTPException(status_code=503, detail="Agent pipeline unavailable", headers={"Retry-After": "30"})
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",

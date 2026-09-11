@@ -21,7 +21,6 @@ to an append-only local JSON-lines file so no audit data is ever lost.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import List
 

@@ -1,0 +1,13 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+# Pyflakes (F) + pycodestyle errors (E) + import sorting (I): catches real
+# bugs (unused imports/vars, undefined names, broken import order) without
+# pyupgrade/bandit-style nitpicks. Broad `except Exception` blocks are an
+# intentional, documented fail-safe pattern throughout agents/ and backend/
+# (every agent call must degrade to a deterministic fallback rather than
+# crash the pipeline), so bugbear/blind-except-style rules are not enabled.
+select = ["E", "F", "I"]
+ignore = ["E501"]  # line length is handled by the formatter/readability, not a hard gate

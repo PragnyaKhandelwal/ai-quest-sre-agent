@@ -3,8 +3,11 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv_test/
 venv/
 env/
+.pytest_cache/
+.ruff_cache/
 
 # Env / secrets
 .env

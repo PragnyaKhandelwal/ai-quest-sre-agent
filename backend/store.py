@@ -26,7 +26,6 @@ from agents.schemas import (
     RunbookProposal,
     TriageResult,
 )
-
 from backend.aims_logger import log_event as aims_log_event
 
 
@@ -224,17 +223,34 @@ class StoreHooks:
         return list(resolved)
 
 
-def resolve_hitl(incident_id: str, request_id: str, approve: bool, decided_by: str = "human", note: str = "") -> Optional[HITLRequest]:
-    """Called synchronously from the FastAPI approve/reject route handlers."""
+class HITLNotFoundError(Exception):
+    """Raised when the incident or the HITL request_id does not exist."""
+
+
+class HITLAlreadyDecidedError(Exception):
+    """Raised when the HITL request has already been approved/rejected/timed out."""
+
+    def __init__(self, request: HITLRequest):
+        self.request = request
+        super().__init__(f"HITL request {request.request_id} already {request.status.value}")
+
+
+def resolve_hitl(incident_id: str, request_id: str, approve: bool, decided_by: str = "human", note: str = "") -> HITLRequest:
+    """Called synchronously from the FastAPI approve/reject route handlers.
+
+    Raises HITLNotFoundError if the incident or request_id doesn't exist, or
+    HITLAlreadyDecidedError if the request has already been resolved -- the
+    caller maps these to 404 / 409 respectively.
+    """
     incident = INCIDENTS.get(incident_id)
     if not incident:
-        return None
+        raise HITLNotFoundError(f"Incident {incident_id} not found")
     pending = incident.hitl_pending.get(request_id)
     if not pending:
-        return None
+        raise HITLNotFoundError(f"HITL request {request_id} not found for incident {incident_id}")
     req, ev = pending
     if req.status != HITLStatus.PENDING:
-        return req  # already decided (idempotent)
+        raise HITLAlreadyDecidedError(req)
     req.status = HITLStatus.APPROVED if approve else HITLStatus.REJECTED
     req.decided_at = time.time()
     req.decided_by = decided_by

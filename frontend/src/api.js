@@ -23,6 +23,14 @@ export function getStats() {
   return fetch(`${BACKEND_URL}/stats`).then(handle);
 }
 
+export function getMetrics() {
+  return fetch(`${BACKEND_URL}/metrics`).then(handle);
+}
+
+export function getIncidentMetrics(id) {
+  return fetch(`${BACKEND_URL}/incidents/${id}/metrics`).then(handle);
+}
+
 export function listIncidents() {
   return fetch(`${BACKEND_URL}/incidents`).then(handle);
 }

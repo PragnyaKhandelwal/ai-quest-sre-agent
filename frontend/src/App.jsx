@@ -4,12 +4,12 @@ import AlertStream from "./components/AlertStream";
 import AgentTrace from "./components/AgentTrace";
 import HITLQueue from "./components/HITLQueue";
 import RCAPanel from "./components/RCAPanel";
+import MetricsPanel from "./components/MetricsPanel";
 import {
   approveHitl,
   getHealth,
   getHitlPending,
   getIncident,
-  getStats,
   listIncidents,
   rejectHitl,
   subscribeGlobalEvents,
@@ -23,7 +23,6 @@ export default function App() {
   const [pendingHitl, setPendingHitl] = useState([]);
   const [busyHitlId, setBusyHitlId] = useState(null);
   const [healthy, setHealthy] = useState(true);
-  const [totalTokens, setTotalTokens] = useState(0);
 
   const incidentStreamCloser = useRef(null);
 
@@ -47,9 +46,6 @@ export default function App() {
     getHealth()
       .then(() => setHealthy(true))
       .catch(() => setHealthy(false));
-    getStats()
-      .then((s) => setTotalTokens(s.total_tokens_used))
-      .catch(() => {});
 
     const closeGlobal = subscribeGlobalEvents(
       (payload) => {
@@ -67,15 +63,8 @@ export default function App() {
       () => setHealthy(false)
     );
 
-    const statsTimer = setInterval(() => {
-      getStats()
-        .then((s) => setTotalTokens(s.total_tokens_used))
-        .catch(() => {});
-    }, 5000);
-
     return () => {
       closeGlobal();
-      clearInterval(statsTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -136,9 +125,6 @@ export default function App() {
           </span>
         </div>
         <div className="flex items-center gap-5 text-xs">
-          <span className="font-mono-log text-gray-400">
-            tokens used: <span className="text-cyan font-semibold">{totalTokens.toLocaleString()}</span>
-          </span>
           <span className={`flex items-center gap-1.5 font-semibold ${healthy ? "text-success" : "text-danger"}`}>
             <span className={`w-2 h-2 rounded-full ${healthy ? "bg-success" : "bg-danger"} ${healthy ? "pulse-dot" : ""}`} />
             {healthy ? "All Agents Online" : "Agent Error"}
@@ -147,6 +133,10 @@ export default function App() {
       </header>
 
       <SimulatorPanel onTriggered={handleSimulateTriggered} />
+
+      <div className="px-4 py-2 bg-panel border-b border-border">
+        <MetricsPanel selectedIncident={selectedDetail} />
+      </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-10 min-h-0">
         <div className="lg:col-span-3 min-h-0">

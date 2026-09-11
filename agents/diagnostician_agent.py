@@ -9,18 +9,52 @@ independent log lines actually support the hypothesis -- the local
 simulation path NEVER invents a log line that isn't in the corpus it was
 given, satisfying the "no hallucinated evidence" safety requirement even
 when Lyzr is not configured.
+
+Retrieval quality: rather than handing the full log corpus to the agent,
+agents/log_retriever.py's TF-IDF retriever narrows the corpus down to the
+top-K lines most semantically relevant to the incident (a RAG pattern),
+which both shrinks the token budget and shrinks the surface area for
+hallucinated citations.
+
+Groundedness: every output additionally passes through
+agents/hallucination_guard.py, which independently re-verifies that every
+cited log line is a verbatim substring of the corpus actually supplied.
+
+# Lyzr ADK: Environment/Agent/Inference pattern
 """
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agents import config
-from agents.lyzr_client import client
-from agents.schemas import DiagnosisHypothesis, Evidence, TriageResult
+from agents.hallucination_guard import validate_agent_output
+from agents.log_retriever import retrieve_relevant_logs
+from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
+from agents.metrics_tracker import estimate_tokens, tracker
+from agents.prompt_templates import DIAGNOSTICIAN_SYSTEM_PROMPT
+from agents.schemas import Alert, DiagnosisHypothesis, Evidence, TriageResult
+
+logger = logging.getLogger(__name__)
 
 AGENT_NAME = "RootCauseDiagnosticianAgent"
+
+RETRIEVAL_TOP_K = 15
+
+# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
+# once at import time, reused for every diagnosis call.
+_diagnostician_lyzr_agent = create_lyzr_agent(
+    name=AGENT_NAME,
+    role="Expert SRE root-cause diagnostician",
+    goal=(
+        "Form a single, technically specific root-cause hypothesis grounded ONLY in the "
+        "log lines provided, citing exact verbatim evidence and calibrating confidence to "
+        "the strength of that evidence."
+    ),
+    instructions=DIAGNOSTICIAN_SYSTEM_PROMPT,
+)
 
 
 @dataclass
@@ -89,12 +123,12 @@ def _score_hypothesis(hyp: CauseHypothesis, logs: List[str]) -> Tuple[float, Lis
     return confidence, evidence
 
 
-def _simulate(triage: TriageResult, logs: List[str]) -> Dict:
+def _simulate(triage: TriageResult, retrieved_lines: List[str], retrieval_scores: List[float]) -> Dict:
     best_hyp = None
     best_conf = -1.0
     best_evidence: List[Evidence] = []
     for hyp in _CAUSE_LIBRARY:
-        conf, evidence = _score_hypothesis(hyp, logs)
+        conf, evidence = _score_hypothesis(hyp, retrieved_lines)
         if conf > best_conf:
             best_conf, best_hyp, best_evidence = conf, hyp, evidence
 
@@ -106,7 +140,8 @@ def _simulate(triage: TriageResult, logs: List[str]) -> Dict:
             "evidence": [],
             "affected_components": triage.affected_services,
             "requires_human_review": True,
-            "reasoning": "No log lines in the supplied corpus matched any known failure signature.",
+            "reasoning": "No log lines in the retrieved set matched any known failure signature.",
+            "retrieval_scores": retrieval_scores,
         }
 
     requires_review = best_conf < config.CONFIDENCE_THRESHOLD
@@ -119,38 +154,62 @@ def _simulate(triage: TriageResult, logs: List[str]) -> Dict:
         "requires_human_review": requires_review,
         "reasoning": (
             f"Matched {len(best_evidence)} independent log line(s) against known "
-            f"failure signature. Confidence scales with number of corroborating "
-            f"log lines actually present in the corpus."
+            f"failure signature, out of the top-{RETRIEVAL_TOP_K} semantically retrieved "
+            f"log lines. Confidence scales with number of corroborating log lines."
         ),
+        "retrieval_scores": retrieval_scores,
     }
 
 
 def run_diagnosis(
-    triage: TriageResult, log_corpus: List[str]
-) -> Tuple[DiagnosisHypothesis, int, float]:
+    triage: TriageResult, log_corpus: List[str], alerts: Optional[List[Alert]] = None
+) -> Tuple[DiagnosisHypothesis, int, float, dict]:
+    """
+    Returns (DiagnosisHypothesis, tokens_used, latency_ms, validation_report).
+    `validation_report` is the agents/hallucination_guard.py 3-layer
+    validation result -- callers (agents/pipeline.py) surface it to the
+    incident's audit trail so groundedness is visible to judges.
+
+    `alerts` (when supplied) supplies the retrieval query: raw alert
+    title/description text carries far more log-matching vocabulary than
+    the triage summary alone (e.g. "OOMKilled", "lock_timeout"), so
+    retrieval recall is meaningfully better against the real alert text.
+    """
+    metrics = tracker.start_call(AGENT_NAME, triage.incident_id)
     try:
+        # --- Retrieval (RAG pattern): narrow the full corpus down to the
+        # top-K lines most semantically relevant to this incident, and hand
+        # the agent ONLY those -- not the full corpus. ---
+        query_parts = [triage.summary]
+        if alerts:
+            query_parts.extend(f"{a.title} {a.description}" for a in alerts)
+        query = " ".join(query_parts)
+        retrieved = retrieve_relevant_logs(query, log_corpus, top_k=RETRIEVAL_TOP_K)
+        retrieved_lines = [r["log_line"] for r in retrieved]
+        retrieval_scores = [r["score"] for r in retrieved]
+        avg_score = sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0
+        logger.info(f"Retrieved {len(retrieved)} relevant logs with avg score {avg_score:.3f}")
+
         user_message = json.dumps(
             {
+                "incident_id": triage.incident_id,
                 "triage_summary": triage.summary,
                 "affected_services": triage.affected_services,
-                "log_corpus": log_corpus,
+                "retrieved_logs": retrieved_lines,
             }
         )
 
-        result = client.run_inference(
-            agent_key="diagnostician",
-            agent_name=AGENT_NAME,
-            system_prompt=config.DIAGNOSTICIAN_SYSTEM_PROMPT,
-            user_message=user_message,
-            session_id=triage.incident_id,
-            simulate_fn=lambda: _simulate(triage, log_corpus),
+        output_text = run_lyzr_agent(
+            _diagnostician_lyzr_agent,
+            lambda _prompt=None: json.dumps(_simulate(triage, retrieved_lines, retrieval_scores)),
+            user_message,
         )
 
         try:
-            payload = json.loads(result.text)
+            payload = json.loads(output_text)
             diagnosis = DiagnosisHypothesis(**payload)
         except Exception:
-            diagnosis = DiagnosisHypothesis(**_simulate(triage, log_corpus))
+            diagnosis = DiagnosisHypothesis(**_simulate(triage, retrieved_lines, retrieval_scores))
 
         # Second, independent enforcement of the confidence gate -- even if
         # the model (or the simulation) forgot to set the flag, we set it
@@ -158,9 +217,21 @@ def run_diagnosis(
         if diagnosis.confidence < config.CONFIDENCE_THRESHOLD:
             diagnosis.requires_human_review = True
 
-        return diagnosis, result.tokens_used, result.latency_ms
+        # Hallucination Guard: schema + hedge-language + grounding checks,
+        # verified against the FULL original corpus (not just the retrieved
+        # subset) so a citation is only valid if it truly exists anywhere.
+        diagnosis, validation_report = validate_agent_output(
+            diagnosis, DiagnosisHypothesis, log_corpus=log_corpus, agent_name=AGENT_NAME
+        )
+        if not validation_report["passed"]:
+            diagnosis.requires_human_review = True
+            logger.warning(f"Diagnosis for {triage.incident_id} failed validation: {validation_report}")
+
+        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
+        return diagnosis, metrics.total_tokens, metrics.latency_ms, validation_report
 
     except Exception as exc:  # pragma: no cover
+        tracker.end_call(metrics, 0, 0)
         fallback = DiagnosisHypothesis(
             incident_id=triage.incident_id,
             cause=f"Diagnostician agent failed ({exc}).",
@@ -170,4 +241,13 @@ def run_diagnosis(
             requires_human_review=True,
             reasoning="Fallback path triggered due to internal error.",
         )
-        return fallback, 0, 0.0
+        error_report = {
+            "agent": AGENT_NAME,
+            "schema_valid": False,
+            "hallucination_signals": [],
+            "grounding_valid": False,
+            "invalid_citations": [],
+            "passed": False,
+            "error": str(exc),
+        }
+        return fallback, 0, 0.0, error_report

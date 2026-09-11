@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from agents import config
+from agents.metrics_tracker import tracker
 from agents.pipeline import run_pipeline
 from agents.schemas import Alert
 from backend import store
@@ -105,6 +106,33 @@ def stats():
         "total_incidents": len(store.INCIDENTS),
         "pending_hitl": len(store.list_pending_hitl()),
     }
+
+
+@app.get("/metrics")
+def metrics():
+    """Session-wide token/cost/latency summary (agents/metrics_tracker.py),
+    powering the dashboard's MetricsPanel header (Token/Latency Optimization
+    checkpoints)."""
+    summary = tracker.get_session_summary()
+    recent_calls = [
+        {
+            "agent": m.agent_name,
+            "incident_id": m.incident_id,
+            "latency_ms": round(m.latency_ms, 1),
+            "total_tokens": m.total_tokens,
+            "cost_usd": round(m.cost_usd, 6),
+        }
+        for m in tracker.calls[-20:]
+    ]
+    return {**summary, "recent_calls": recent_calls}
+
+
+@app.get("/incidents/{incident_id}/metrics")
+def incident_metrics(incident_id: str):
+    incident = store.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+    return tracker.get_incident_metrics(incident_id)
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,10 @@ Safety contract:
   * This classification is re-verified independently in
     backend/aims_logger.py before any "executed" event is ever logged --
     defense in depth, two separate checks against the same source list.
+  * Every action carries an explicit rollback_command (or a documented
+    reason none applies), per REMEDIATION_SYSTEM_PROMPT's defensive rules.
+
+# Lyzr ADK: Environment/Agent/Inference pattern
 """
 from __future__ import annotations
 
@@ -25,10 +29,25 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from agents import config
-from agents.lyzr_client import client
+from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
+from agents.metrics_tracker import estimate_tokens, tracker
+from agents.prompt_templates import REMEDIATION_SYSTEM_PROMPT
 from agents.schemas import DiagnosisHypothesis, RemediationAction, RiskLevel, RunbookProposal
 
 AGENT_NAME = "RemediationPlannerAgent"
+
+# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
+# once at import time, reused for every remediation call.
+_remediation_lyzr_agent = create_lyzr_agent(
+    name=AGENT_NAME,
+    role="Expert SRE remediation planner operating under a strict safety policy",
+    goal=(
+        "Propose an ordered runbook of remediation steps for a diagnosed root cause. "
+        "Classify every action as SAFE or DESTRUCTIVE, never auto-approve a destructive "
+        "action, and give every action an explicit rollback path."
+    ),
+    instructions=REMEDIATION_SYSTEM_PROMPT,
+)
 
 
 def is_destructive_command(command: str) -> bool:
@@ -42,7 +61,7 @@ def is_destructive_command(command: str) -> bool:
 @dataclass
 class RunbookTemplate:
     match_keywords: List[str]
-    steps: List[dict]  # description, command, risk_level, reason
+    steps: List[dict]  # description, command, risk_level, reason, rollback_command
 
 
 _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
@@ -54,12 +73,14 @@ _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
                 "command": "kubectl rollout restart deployment/payment-service -n production",
                 "risk_level": RiskLevel.LOW,
                 "reason": "Non-destructive; Kubernetes performs a graceful rolling restart with zero downtime.",
+                "rollback_command": "N/A -- restart is idempotent, no rollback needed.",
             },
             {
                 "description": "Scale up replicas temporarily to absorb load during restart",
                 "command": "kubectl scale deployment/payment-service --replicas=6 -n production",
                 "risk_level": RiskLevel.LOW,
                 "reason": "Non-destructive capacity increase; safe to auto-execute.",
+                "rollback_command": "kubectl scale deployment/payment-service --replicas=3 -n production",
             },
         ],
     ),
@@ -71,6 +92,7 @@ _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
                 "command": "kubectl rollout undo deployment/api-gateway -n production --to-revision=v2.3.0",
                 "risk_level": RiskLevel.LOW,
                 "reason": "Non-destructive rollback restores previous stable revision; safe to auto-execute.",
+                "rollback_command": "kubectl rollout undo deployment/api-gateway -n production --to-revision=v2.3.1",
             },
         ],
     ),
@@ -82,12 +104,14 @@ _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
                 "command": "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE query = 'UPDATE orders ...' AND state = 'active';",
                 "risk_level": RiskLevel.CRITICAL,
                 "reason": "DESTRUCTIVE: forcibly kills an active database session and rolls back its transaction. Requires human approval.",
+                "rollback_command": "N/A -- session termination is not reversible; monitor for transaction re-submission.",
             },
             {
                 "description": "Set statement_timeout to prevent recurrence",
                 "command": "ALTER DATABASE orders_db SET statement_timeout = '30s';",
                 "risk_level": RiskLevel.LOW,
                 "reason": "Non-destructive configuration change; safe to auto-execute.",
+                "rollback_command": "ALTER DATABASE orders_db SET statement_timeout = DEFAULT;",
             },
         ],
     ),
@@ -99,18 +123,21 @@ _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
                 "command": "kubectl cordon worker-3",
                 "risk_level": RiskLevel.HIGH,
                 "reason": "DESTRUCTIVE-adjacent: removes node from scheduling pool, impacts cluster capacity. Requires human approval.",
+                "rollback_command": "kubectl uncordon worker-3",
             },
             {
                 "description": "Drain worker-3 to safely evict remaining workloads before cleanup",
                 "command": "kubectl drain worker-3 --ignore-daemonsets --delete-emptydir-data",
                 "risk_level": RiskLevel.CRITICAL,
                 "reason": "DESTRUCTIVE: forcibly evicts all pods from the node. Requires human approval.",
+                "rollback_command": "kubectl uncordon worker-3  # pods already evicted and rescheduled elsewhere",
             },
             {
                 "description": "Apply logrotate configuration to prevent recurrence",
                 "command": "kubectl apply -f configs/logrotate-daemonset.yaml",
                 "risk_level": RiskLevel.LOW,
                 "reason": "Non-destructive configuration rollout; safe to auto-execute.",
+                "rollback_command": "kubectl delete -f configs/logrotate-daemonset.yaml",
             },
         ],
     ),
@@ -124,6 +151,7 @@ _DEFAULT_TEMPLATE = RunbookTemplate(
             "command": "N/A - manual investigation required",
             "risk_level": RiskLevel.MEDIUM,
             "reason": "No automated runbook matched this diagnosis with sufficient confidence.",
+            "rollback_command": "N/A -- no automated action was taken.",
         }
     ],
 )
@@ -156,6 +184,7 @@ def _build_actions(template: RunbookTemplate) -> List[RemediationAction]:
                 reason=step["reason"],
                 executed=False,
                 hitl_required=destructive,
+                rollback_command=step.get("rollback_command"),
             )
         )
     return actions
@@ -175,6 +204,7 @@ def _simulate(diagnosis: DiagnosisHypothesis) -> Dict:
 
 
 def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, int, float]:
+    metrics = tracker.start_call(AGENT_NAME, diagnosis.incident_id)
     try:
         user_message = json.dumps(
             {
@@ -185,17 +215,14 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
             }
         )
 
-        result = client.run_inference(
-            agent_key="remediation",
-            agent_name=AGENT_NAME,
-            system_prompt=config.REMEDIATION_SYSTEM_PROMPT,
-            user_message=user_message,
-            session_id=diagnosis.incident_id,
-            simulate_fn=lambda: _simulate(diagnosis),
+        output_text = run_lyzr_agent(
+            _remediation_lyzr_agent,
+            lambda _prompt=None: json.dumps(_simulate(diagnosis)),
+            user_message,
         )
 
         try:
-            payload = json.loads(result.text)
+            payload = json.loads(output_text)
             proposal = RunbookProposal(**payload)
         except Exception:
             proposal = RunbookProposal(**_simulate(diagnosis))
@@ -207,6 +234,8 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
         for action in proposal.actions:
             action.is_destructive = is_destructive_command(action.command)
             action.hitl_required = action.is_destructive
+            if not action.rollback_command:
+                action.rollback_command = "N/A -- no rollback documented for this action."
             if action.is_destructive:
                 blocked.append(action.step)
             else:
@@ -214,9 +243,11 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
         proposal.auto_executed_steps = auto_executed
         proposal.blocked_steps = blocked
 
-        return proposal, result.tokens_used, result.latency_ms
+        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
+        return proposal, metrics.total_tokens, metrics.latency_ms
 
     except Exception as exc:  # pragma: no cover
+        tracker.end_call(metrics, 0, 0)
         fallback = RunbookProposal(
             incident_id=diagnosis.incident_id,
             actions=[
@@ -229,6 +260,7 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
                     reason=f"Remediation agent failed: {exc}",
                     executed=False,
                     hitl_required=False,
+                    rollback_command="N/A -- no automated action was taken.",
                 )
             ],
             auto_executed_steps=[],

@@ -33,19 +33,53 @@ function ConfidenceMeter({ confidence, threshold }) {
   );
 }
 
-function TraceStep({ step }) {
+function latencyBadgeColor(ms) {
+  if (ms < 2000) return "text-success";
+  if (ms < 5000) return "text-warn";
+  return "text-danger";
+}
+
+function HallucinationGuardResult({ report }) {
+  if (!report) return null;
+  return (
+    <span
+      className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+        report.passed
+          ? "text-success border-success/40 bg-success/10"
+          : "text-warn border-warn/40 bg-warn/10"
+      }`}
+    >
+      {report.passed ? "✓ Hallucination Guard passed" : "⚠ Hallucination Guard flagged output"}
+    </span>
+  );
+}
+
+function RetrievalScores({ scores }) {
+  if (!Array.isArray(scores) || scores.length === 0) return null;
+  const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+  return (
+    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border text-cyan border-cyan/40 bg-cyan/10">
+      🔍 {scores.length} logs retrieved, avg score {avg.toFixed(3)}
+    </span>
+  );
+}
+
+function TraceStep({ step, hallucinationReport }) {
   const [expanded, setExpanded] = useState(false);
   const color = AGENT_COLORS[step.agent_name] || "bg-gray-500/15 text-gray-300";
   const evidence = step.detail?.evidence;
   const confidence = step.detail?.confidence;
+  const retrievalScores = step.detail?.retrieval_scores;
 
   return (
     <div className={`rounded-lg border ${step.blocked ? "border-danger/50" : "border-border"} bg-black/20 p-3`}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${color}`}>{step.agent_name}</span>
         <div className="flex items-center gap-3 text-[11px] text-gray-500 font-mono-log">
-          <span>{step.tokens_used} tok</span>
-          <span>{step.latency_ms.toFixed(0)}ms</span>
+          <span title="tokens consumed by this call">🔢 {step.tokens_used} tok</span>
+          <span title="latency of this call" className={`font-semibold ${latencyBadgeColor(step.latency_ms)}`}>
+            ⚡ {step.latency_ms.toFixed(0)}ms
+          </span>
           <span>{new Date(step.timestamp * 1000).toLocaleTimeString()}</span>
         </div>
       </div>
@@ -57,6 +91,13 @@ function TraceStep({ step }) {
       )}
 
       <p className="text-sm text-gray-200 mt-2 leading-snug">{step.summary}</p>
+
+      {(hallucinationReport || retrievalScores) && (
+        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+          <HallucinationGuardResult report={hallucinationReport} />
+          <RetrievalScores scores={retrievalScores} />
+        </div>
+      )}
 
       {typeof confidence === "number" && (
         <ConfidenceMeter confidence={confidence} threshold={0.7} />
@@ -106,9 +147,15 @@ export default function AgentTrace({ incident }) {
         {incident.trace.length === 0 && (
           <div className="text-gray-500 text-sm">Waiting for agents to start reasoning...</div>
         )}
-        {incident.trace.map((step) => (
-          <TraceStep key={step.step_id} step={step} />
-        ))}
+        {incident.trace.map((step) => {
+          // Each hallucination_guard.py report is keyed by agent name (only
+          // the diagnostician runs through the guard today); match it to
+          // its trace step so the badge renders inline with that step.
+          const hallucinationReport = (incident.hallucination_reports || []).find(
+            (r) => r.agent === step.agent_name
+          );
+          return <TraceStep key={step.step_id} step={step} hallucinationReport={hallucinationReport} />;
+        })}
       </div>
     </div>
   );

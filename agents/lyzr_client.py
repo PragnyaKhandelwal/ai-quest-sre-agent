@@ -1,185 +1,87 @@
 """
 agents/lyzr_client.py
 
-Thin wrapper around the Lyzr Agent API (Environment -> Agent -> Inference)
-providing the three-layer separation the rubric asks for:
+Real Lyzr ADK (lyzr-adk PyPI package, `import lyzr`) integration point.
 
-    Environment  -- a Lyzr Environment groups the agents for this system
-                    and enables SHORT_TERM_MEMORY so state persists across
-                    inference calls within an incident session.
-    Agent        -- each pipeline stage (triage / diagnostician / remediation
-                    / postmortem) is registered as its own Lyzr Agent with
-                    its own system prompt and model config.
-    Inference    -- every agent call is a POST /inference call scoped to a
-                    session_id (the incident_id), so Lyzr persists
-                    conversational state per-incident.
+# Lyzr ADK: Environment/Agent/Inference pattern
+- Environment: the `Studio` instance is this process's Lyzr environment --
+  it owns the connection and every agent registered against it.
+- Agent: each pipeline stage (triage / diagnostician / remediation /
+  postmortem) registers its own `Studio.create_agent(...)` with its own
+  role/goal/instructions -- see the module-level `_*_lyzr_agent` handles
+  created in each agents/*_agent.py file.
+- Inference: `agent.run(prompt)` is the inference call. Every call site in
+  this codebase goes through `run_lyzr_agent()` below, which always falls
+  back to a deterministic local-simulation function on any failure (no key
+  configured, SDK not installed, network error, malformed response) so the
+  pipeline never crashes and never blocks on an external dependency.
 
-If LYZR_API_KEY is not configured (LYZR_ENABLED=False), every call
-transparently falls back to a local, deterministic JSON-producing
-"simulated inference" so the whole system remains fully functional for
-demo/judging without any external API key. The call signature and return
-shape are identical in both modes, so pipeline code never needs to know
-which mode it's running in.
+If LYZR_API_KEY is unset, or the `lyzr` package/API call fails for any
+reason, USE_REAL_LYZR is False and every agent call transparently uses its
+local-simulation fallback instead -- the demo remains 100% functional with
+zero external API keys, and the exact same code path activates the moment
+a real key is supplied.
 """
-from __future__ import annotations
+import logging
+import os
+from typing import Optional
 
-import json
-import time
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+logger = logging.getLogger(__name__)
 
-import requests
+LYZR_API_KEY = os.getenv("LYZR_API_KEY", "")
+USE_REAL_LYZR = bool(LYZR_API_KEY)
 
-from agents import config
+studio: Optional[object] = None
+
+if USE_REAL_LYZR:
+    try:
+        from lyzr import Studio
+
+        studio = Studio(api_key=LYZR_API_KEY)
+        logger.info("Lyzr SDK initialized — real agent mode active")
+    except Exception as e:
+        USE_REAL_LYZR = False
+        logger.warning(f"Lyzr SDK init failed, falling back to simulation: {e}")
+else:
+    logger.info("No LYZR_API_KEY — running in simulation mode")
 
 
-@dataclass
-class InferenceResult:
-    text: str
-    tokens_used: int
-    latency_ms: float
-    simulated: bool = False
+def create_lyzr_agent(name: str, role: str, goal: str, instructions: str):
+    """Create a Lyzr agent or return None (simulation-only handle).
 
-
-class LyzrClient:
-    """Manages one Lyzr Environment and its registered Agents."""
-
-    def __init__(self) -> None:
-        self.enabled = config.LYZR_ENABLED
-        self.environment_id: Optional[str] = None
-        self._agent_ids: Dict[str, str] = {}
-        self._session = requests.Session()
-        if self.enabled:
-            self._session.headers.update(
-                {
-                    "x-api-key": config.LYZR_API_KEY,
-                    "Content-Type": "application/json",
-                }
-            )
-
-    # ------------------------------------------------------------------
-    # Environment / Agent bootstrap
-    # ------------------------------------------------------------------
-    def ensure_environment(self, name: str = "sre-incident-response") -> Optional[str]:
-        if not self.enabled:
-            return None
-        if self.environment_id:
-            return self.environment_id
-        try:
-            resp = self._session.post(
-                f"{config.LYZR_BASE_URL}/environment",
-                json={
-                    "name": name,
-                    "description": "Governed multi-agent SRE incident triage & remediation",
-                    "feature_types": ["SHORT_TERM_MEMORY"],
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            self.environment_id = resp.json().get("id")
-            return self.environment_id
-        except Exception:
-            # Fail safe: fall back to local simulation for this process.
-            self.enabled = False
-            return None
-
-    def ensure_agent(self, key: str, name: str, system_prompt: str) -> Optional[str]:
-        if not self.enabled:
-            return None
-        if key in self._agent_ids:
-            return self._agent_ids[key]
-        env_id = self.ensure_environment()
-        if not env_id:
-            return None
-        try:
-            resp = self._session.post(
-                f"{config.LYZR_BASE_URL}/agent",
-                json={
-                    "environment_id": env_id,
-                    "name": name,
-                    "system_prompt": system_prompt,
-                    "model_config": {
-                        "model": config.MODEL,
-                        "max_tokens": config.MAX_TOKENS,
-                        "temperature": config.TEMPERATURE,
-                    },
-                    "tools": [],
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            agent_id = resp.json().get("id")
-            self._agent_ids[key] = agent_id
-            return agent_id
-        except Exception:
-            self.enabled = False
-            return None
-
-    # ------------------------------------------------------------------
-    # Inference
-    # ------------------------------------------------------------------
-    def run_inference(
-        self,
-        agent_key: str,
-        agent_name: str,
-        system_prompt: str,
-        user_message: str,
-        session_id: str,
-        simulate_fn: Callable[[], Dict[str, Any]],
-    ) -> InferenceResult:
-        """
-        Run one inference call for `agent_key`. Always returns an
-        InferenceResult whose `.text` is a JSON string. Falls back to
-        `simulate_fn()` (a callable returning a dict) whenever Lyzr is not
-        configured or the remote call fails for any reason -- callers never
-        see a raised exception from network issues.
-        """
-        start = time.perf_counter()
-
-        if self.enabled:
-            agent_id = self.ensure_agent(agent_key, agent_name, system_prompt)
-            if agent_id:
-                try:
-                    resp = self._session.post(
-                        f"{config.LYZR_BASE_URL}/inference",
-                        json={
-                            "agent_id": agent_id,
-                            "session_id": session_id,
-                            "message": user_message,
-                        },
-                        timeout=30,
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    latency_ms = (time.perf_counter() - start) * 1000
-                    text = data.get("response", "")
-                    tokens_used = data.get("tokens_used") or _estimate_tokens(
-                        user_message + text
-                    )
-                    return InferenceResult(
-                        text=text, tokens_used=tokens_used, latency_ms=latency_ms
-                    )
-                except Exception:
-                    pass  # fall through to simulation
-
-        # ---- local simulation fallback (deterministic, schema-safe) ----
-        try:
-            payload = simulate_fn()
-            text = json.dumps(payload)
-        except Exception as exc:  # pragma: no cover - defensive
-            text = json.dumps({"error": str(exc)})
-        latency_ms = (time.perf_counter() - start) * 1000
-        tokens_used = _estimate_tokens(user_message + text)
-        return InferenceResult(
-            text=text, tokens_used=tokens_used, latency_ms=latency_ms, simulated=True
+    Wrapped in try/except: this runs at *module import time* in every
+    agents/*_agent.py file (one module-level agent per pipeline stage), so
+    a transient SDK/network failure here must never crash app startup.
+    """
+    if not USE_REAL_LYZR or studio is None:
+        return None
+    try:
+        return studio.create_agent(
+            name=name,
+            provider="openai/gpt-4o-mini",
+            role=role,
+            goal=goal,
+            instructions=instructions,
+            temperature=0.1,  # Low temp for deterministic SRE decisions
         )
+    except Exception as e:
+        logger.warning(f"Lyzr create_agent('{name}') failed, will use simulation fallback: {e}")
+        return None
 
 
-def _estimate_tokens(text: str) -> int:
-    """Cheap token estimate (~4 chars/token) used for local-mode logging
-    and as a fallback when the API doesn't report usage."""
-    return max(1, len(text) // 4)
+def run_lyzr_agent(agent, fallback_fn, *args, **kwargs):
+    """Run a real Lyzr agent if available, else fall back to a local function.
 
-
-# Module-level singleton shared by all agents/pipeline runs.
-client = LyzrClient()
+    `fallback_fn` is called with the same *args/**kwargs used to derive the
+    prompt below, so callers typically pass a single positional prompt
+    string and give fallback_fn a signature that accepts (and ignores) it,
+    e.g. `lambda _prompt=None: json.dumps(_simulate(...))`.
+    """
+    if USE_REAL_LYZR and agent is not None:
+        try:
+            prompt = kwargs.get("prompt", args[0] if args else "")
+            response = agent.run(prompt)
+            return response.response
+        except Exception as e:
+            logger.error(f"Lyzr agent call failed: {e}, falling back")
+    return fallback_fn(*args, **kwargs)

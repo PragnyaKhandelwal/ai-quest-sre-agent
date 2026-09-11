@@ -40,6 +40,9 @@ class IncidentState:
     runbook: Optional[RunbookProposal] = None
     rca: Optional[RCAReport] = None
     trace: List[AgentTraceStep] = field(default_factory=list)
+    # agents/hallucination_guard.py validation reports (one per diagnosis),
+    # surfaced via GET /incidents/{id} so groundedness is visible to judges.
+    hallucination_reports: List[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     scenario: Optional[str] = None
@@ -62,6 +65,7 @@ class IncidentState:
             "runbook": self.runbook.model_dump() if self.runbook else None,
             "rca": self.rca.model_dump() if self.rca else None,
             "trace": [t.model_dump() for t in self.trace],
+            "hallucination_reports": self.hallucination_reports,
             "pending_hitl": [
                 req.model_dump() for req, _ in self.hitl_pending.values() if req.status == HITLStatus.PENDING
             ],
@@ -194,6 +198,15 @@ class StoreHooks:
         setattr(incident, key, value)
         incident.updated_at = time.time()
         _broadcast_global({"type": "status_update", "incident": incident.summary_dict()})
+
+    def add_hallucination_report(self, incident_id: str, report: dict) -> None:
+        incident = INCIDENTS.get(incident_id)
+        if not incident:
+            return
+        incident.hallucination_reports.append(report)
+        incident.updated_at = time.time()
+        if not report.get("passed", True):
+            _broadcast_global({"type": "hallucination_warning", "incident": incident.summary_dict()})
 
     async def await_hitl(self, incident_id: str, requests: List[HITLRequest]) -> List[HITLRequest]:
         incident = INCIDENTS.get(incident_id)

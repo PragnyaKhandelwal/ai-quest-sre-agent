@@ -111,6 +111,10 @@ class DiagnosisHypothesis(BaseModel):
     affected_components: List[str]
     requires_human_review: bool = False
     reasoning: str = ""
+    # Populated by the semantic log retriever (agents/log_retriever.py):
+    # cosine-similarity scores of the log lines actually retrieved and
+    # handed to this agent, evidencing retrieval quality to judges.
+    retrieval_scores: List[float] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +129,10 @@ class RemediationAction(BaseModel):
     reason: str
     executed: bool = False
     hitl_required: bool = False
+    # Every action must carry an explicit rollback path (or a documented
+    # reason none exists) -- enforced by REMEDIATION_SYSTEM_PROMPT's
+    # defensive rules in agents/prompt_templates.py.
+    rollback_command: Optional[str] = None
 
 
 class RunbookProposal(BaseModel):

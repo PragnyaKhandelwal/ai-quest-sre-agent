@@ -5,6 +5,12 @@ requests==2.32.3
 python-dotenv==1.0.1
 reportlab==4.2.5
 
+# Real Lyzr ADK integration (agents/lyzr_client.py). Note: `pip install
+# sklearn` is a broken/deprecated meta-package that errors on install --
+# the real PyPI package is `scikit-learn`, imported as `sklearn`.
+lyzr-adk==0.1.12
+scikit-learn==1.5.2
+
 # Test dependencies (also used by .github/workflows/ci.yml)
 pytest==8.3.4
 httpx==0.28.1

@@ -7,14 +7,17 @@ Consumes the full incident record (alerts + triage + diagnosis +
 remediation + HITL decisions + timeline) and produces a blameless RCA
 report. The report is grounded entirely in the structured objects produced
 by the earlier pipeline stages -- no new facts are introduced.
+
+# Lyzr ADK: Environment/Agent/Inference pattern
 """
 from __future__ import annotations
 
 import json
 from typing import List, Tuple
 
-from agents import config
-from agents.lyzr_client import client
+from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
+from agents.metrics_tracker import estimate_tokens, tracker
+from agents.prompt_templates import POSTMORTEM_SYSTEM_PROMPT
 from agents.schemas import (
     Alert,
     DiagnosisHypothesis,
@@ -25,6 +28,19 @@ from agents.schemas import (
 )
 
 AGENT_NAME = "PostMortemRCAAgent"
+
+# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
+# once at import time, reused for every post-mortem call.
+_postmortem_lyzr_agent = create_lyzr_agent(
+    name=AGENT_NAME,
+    role="Blameless post-incident review analyst",
+    goal=(
+        "Produce a structured, blameless RCA grounded entirely in the incident record "
+        "provided: timeline, root cause, contributing factors, and specific, actionable "
+        "prevention recommendations."
+    ),
+    instructions=POSTMORTEM_SYSTEM_PROMPT,
+)
 
 
 def _simulate(
@@ -105,6 +121,7 @@ def run_postmortem(
     runbook: RunbookProposal,
     timeline: List[TimelineEvent],
 ) -> Tuple[RCAReport, int, float]:
+    metrics = tracker.start_call(AGENT_NAME, incident_id)
     try:
         user_message = json.dumps(
             {
@@ -117,24 +134,23 @@ def run_postmortem(
             default=str,
         )
 
-        result = client.run_inference(
-            agent_key="postmortem",
-            agent_name=AGENT_NAME,
-            system_prompt=config.POSTMORTEM_SYSTEM_PROMPT,
-            user_message=user_message,
-            session_id=incident_id,
-            simulate_fn=lambda: _simulate(incident_id, alerts, triage, diagnosis, runbook, timeline),
+        output_text = run_lyzr_agent(
+            _postmortem_lyzr_agent,
+            lambda _prompt=None: json.dumps(_simulate(incident_id, alerts, triage, diagnosis, runbook, timeline)),
+            user_message,
         )
 
         try:
-            payload = json.loads(result.text)
+            payload = json.loads(output_text)
             rca = RCAReport(**payload)
         except Exception:
             rca = RCAReport(**_simulate(incident_id, alerts, triage, diagnosis, runbook, timeline))
 
-        return rca, result.tokens_used, result.latency_ms
+        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
+        return rca, metrics.total_tokens, metrics.latency_ms
 
     except Exception as exc:  # pragma: no cover
+        tracker.end_call(metrics, 0, 0)
         fallback = RCAReport(
             incident_id=incident_id,
             title=f"RCA generation failed for {incident_id}",

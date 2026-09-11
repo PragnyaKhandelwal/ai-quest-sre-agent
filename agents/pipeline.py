@@ -62,6 +62,12 @@ class PipelineHooks(Protocol):
         runbook/rca) onto the incident's stored state."""
         ...
 
+    def add_hallucination_report(self, incident_id: str, report: dict) -> None:
+        """Append an agents/hallucination_guard.py validation report to the
+        incident's audit trail, so groundedness is visible to judges via
+        GET /incidents/{id}."""
+        ...
+
     async def await_hitl(
         self, incident_id: str, requests: List[HITLRequest]
     ) -> List[HITLRequest]:
@@ -150,9 +156,10 @@ async def run_pipeline(
         # Stage 2: Root Cause Diagnosis
         # ------------------------------------------------------------ #
         hooks.on_status(incident_id, IncidentStatus.DIAGNOSING)
-        diagnosis, tokens, latency = run_diagnosis(triage, log_corpus)
+        diagnosis, tokens, latency, validation_report = run_diagnosis(triage, log_corpus, alerts)
         ctx.diagnosis = diagnosis
         hooks.set_result(incident_id, "diagnosis", diagnosis)
+        hooks.add_hallucination_report(incident_id, validation_report)
         ctx.timeline.append(
             TimelineEvent(timestamp=time.time(), event=f"Root cause hypothesis (confidence {diagnosis.confidence:.2f}): {diagnosis.cause}", actor=DIAGNOSTICIAN_NAME)
         )

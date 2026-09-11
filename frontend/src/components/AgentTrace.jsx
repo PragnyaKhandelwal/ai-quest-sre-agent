@@ -1,0 +1,115 @@
+import { useState } from "react";
+
+const AGENT_COLORS = {
+  TriageAndDedupAgent: "bg-cyan/15 text-cyan",
+  RootCauseDiagnosticianAgent: "bg-purple-500/15 text-purple-300",
+  RemediationPlannerAgent: "bg-warn/15 text-warn",
+  PostMortemRCAAgent: "bg-success/15 text-success",
+  LyzrSafeAI: "bg-danger/15 text-danger",
+  pipeline: "bg-gray-500/15 text-gray-300",
+};
+
+function ConfidenceMeter({ confidence, threshold }) {
+  const pct = Math.round(confidence * 100);
+  const below = confidence < threshold;
+  return (
+    <div className="mt-2">
+      <div className="flex items-center justify-between text-[11px] mb-1">
+        <span className="text-gray-400">Diagnosis confidence</span>
+        <span className={below ? "text-danger font-semibold" : "text-success font-semibold"}>{pct}%</span>
+      </div>
+      <div className="h-2 rounded-full bg-black/40 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${below ? "bg-danger" : "bg-success"}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {below && (
+        <div className="text-[11px] text-danger mt-1">
+          Below {Math.round(threshold * 100)}% threshold -- escalated for human review
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TraceStep({ step }) {
+  const [expanded, setExpanded] = useState(false);
+  const color = AGENT_COLORS[step.agent_name] || "bg-gray-500/15 text-gray-300";
+  const evidence = step.detail?.evidence;
+  const confidence = step.detail?.confidence;
+
+  return (
+    <div className={`rounded-lg border ${step.blocked ? "border-danger/50" : "border-border"} bg-black/20 p-3`}>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${color}`}>{step.agent_name}</span>
+        <div className="flex items-center gap-3 text-[11px] text-gray-500 font-mono-log">
+          <span>{step.tokens_used} tok</span>
+          <span>{step.latency_ms.toFixed(0)}ms</span>
+          <span>{new Date(step.timestamp * 1000).toLocaleTimeString()}</span>
+        </div>
+      </div>
+
+      {step.blocked && (
+        <div className="mt-2 text-xs font-semibold text-danger bg-danger/10 border border-danger/40 rounded px-2 py-1">
+          ⛔ BLOCKED: Destructive action requires human approval
+        </div>
+      )}
+
+      <p className="text-sm text-gray-200 mt-2 leading-snug">{step.summary}</p>
+
+      {typeof confidence === "number" && (
+        <ConfidenceMeter confidence={confidence} threshold={0.7} />
+      )}
+
+      {Array.isArray(evidence) && evidence.length > 0 && (
+        <div className="mt-2">
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="text-[11px] text-cyan hover:underline"
+          >
+            {expanded ? "Hide" : "Show"} evidence ({evidence.length})
+          </button>
+          {expanded && (
+            <ul className="mt-1.5 space-y-1 font-mono-log text-[11px] text-gray-400 bg-black/30 rounded p-2 max-h-40 overflow-y-auto">
+              {evidence.map((e, i) => (
+                <li key={i}>
+                  <span className="text-gray-600">L{e.line_number}:</span> {e.log_line}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default function AgentTrace({ incident }) {
+  if (!incident) {
+    return (
+      <div className="flex items-center justify-center h-full text-gray-500 text-sm bg-base">
+        Select an incident from the alert stream to view the agent reasoning trace.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col h-full bg-base">
+      <div className="px-4 py-3 border-b border-border">
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-300">
+          Agent Reasoning Trace
+        </h2>
+        <div className="text-xs text-gray-500 mt-0.5 font-mono-log">{incident.incident_id}</div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        {incident.trace.length === 0 && (
+          <div className="text-gray-500 text-sm">Waiting for agents to start reasoning...</div>
+        )}
+        {incident.trace.map((step) => (
+          <TraceStep key={step.step_id} step={step} />
+        ))}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: sre-agent-backend
+    env: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: LYZR_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MODEL
+        value: gpt-4o-mini
+      - key: MAX_TOKENS
+        value: "1000"
+      - key: TEMPERATURE
+        value: "0.2"
+      - key: CONFIDENCE_THRESHOLD
+        value: "0.70"
+      - key: HITL_TIMEOUT_SECONDS
+        value: "300"
+      - key: DEDUP_WINDOW_SECONDS
+        value: "300"

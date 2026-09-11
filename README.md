@@ -191,8 +191,13 @@ curl http://localhost:8000/incidents/<incident_id>/rca/pdf -o rca.pdf
 **Backend → Render:** `render.yaml` is included at the repo root. Connect the repo in the Render
 dashboard, it will auto-detect `render.yaml`; set `LYZR_API_KEY` / `OPENAI_API_KEY` as secrets.
 
-**Frontend → Vercel:** `vercel.json` is included at the repo root. Import the repo in Vercel; set
-`VITE_BACKEND_URL` to your deployed Render URL.
+**Frontend → Vercel:** `frontend/vercel.json` scopes the deploy to the Vite app. Because this repo
+also contains a Python `backend/` folder, Vercel's importer will otherwise try to detect it as a
+*second* service and demand a multi-service config — avoid that by setting **Root Directory** to
+`frontend` when importing the project (Vercel dashboard → Project Settings → General → Root
+Directory, or in the "Configure Project" step during import). With Root Directory scoped to
+`frontend`, Vercel only ever sees the Vite app. Then set `VITE_BACKEND_URL` to your deployed
+Render URL.
 
 **Live demo URLs:** _fill in after deploying —_
 - Frontend: `https://<your-app>.vercel.app`

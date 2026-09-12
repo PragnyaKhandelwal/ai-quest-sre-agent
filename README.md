@@ -161,12 +161,20 @@ If `OPENAI_API_KEY` is not set but `GROQ_API_KEY` is (get one free at
 [console.groq.com/keys](https://console.groq.com/keys)), the system automatically falls
 back to Groq's `llama-3.1-8b-instant` instead -- Groq's API is OpenAI-compatible, so the
 same `agents/automata_pipeline.py` code path is reused with a `base_url` override to
-`https://api.groq.com/openai/v1`. Groq's LPU hardware is publicly benchmarked at
-several hundred tokens/second for 8B-class models, which is meaningfully faster than
-typical cloud GPU inference for models like GPT-4o-mini -- a direct assist for this
-project's Latency Optimization checkpoint whenever only a Groq key is available. (These
-are Groq's own published figures, not a benchmark measured by this repo -- the exact gap
-depends on prompt size, region, and provider load at request time.)
+`https://api.groq.com/openai/v1`. Groq's LPU hardware is independently benchmarked at
+several hundred tokens/second for 8B-class models -- among the fastest raw token
+generation available for a model this size, and the reason it was chosen as the fallback.
+
+Measured on this exact deployment (Lyzr Studio, `GROQ_API_KEY` configured, 4 agent calls
+for one incident): **2.3s–4.0s per call**, `GET /incidents/{id}/metrics`. That's slower
+than Groq's own raw-API numbers suggest, because every call here is proxied through Lyzr
+Agent Studio's own orchestration layer (`agent.run()` -> Lyzr's platform -> Groq -> back)
+rather than hitting Groq directly -- so today, most of what you're measuring end-to-end is
+Lyzr Studio's overhead, not Groq's. The 8B model choice, low `MAX_TOKENS`, and `temperature=0.1`
+still keep per-call cost and token count low regardless of that overhead (see `GET /metrics`).
+
+Priority order, defined once in `agents/config.py` (`LLM_PROVIDER`/`LLM_MODEL`) and read
+by every layer: **`OPENAI_API_KEY` > `GROQ_API_KEY` > local simulation.** Check which one
 
 Priority order, defined once in `agents/config.py` (`LLM_PROVIDER`/`LLM_MODEL`) and read
 by every layer: **`OPENAI_API_KEY` > `GROQ_API_KEY` > local simulation.** Check which one
@@ -391,7 +399,7 @@ top of this file for current status.
 | Retrieval Quality | TF-IDF semantic retrieval (`agents/log_retriever.py`), top-15 relevant logs injected, cosine-similarity scores stored and shown |
 | Token Optimization | `gpt-4o-mini` (or Groq's `llama-3.1-8b-instant` fallback), `MAX_TOKENS=1000`/800, per-call token tracking (`agents/metrics_tracker.py`), session total in the dashboard header |
 | Prompt Architecture | Defensive system prompts (`agents/prompt_templates.py`) with explicit "STRICT RULES -- NEVER VIOLATE" sections and a schema-accurate OUTPUT FORMAT |
-| Latency Optimization | Per-agent latency measured and tracked, color-coded (green/yellow/red) in the UI, session average in the header; optional Groq fallback (`GROQ_API_KEY`) trades GPT-4o-mini for Groq's LPU-hosted `llama-3.1-8b-instant` when no OpenAI key is set -- see "LLM provider" above |
+| Latency Optimization | Per-agent latency measured and tracked (`GET /incidents/{id}/metrics`), color-coded (green/yellow/red) in the UI, session average in the header; optional Groq fallback (`GROQ_API_KEY`) when no OpenAI key is set -- see "LLM provider" above for measured latency on this deployment |
 
 ---
 

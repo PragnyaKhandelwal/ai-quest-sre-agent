@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 import uuid
 from typing import List, Optional
@@ -33,6 +34,20 @@ from backend.store import StoreHooks
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("sre_agent.backend")
+
+# lyzr_automata (agents/automata_pipeline.py) logs its own task output via
+# plain print() statements. On a Windows console defaulting to the cp1252
+# codepage, real LLM output containing certain Unicode punctuation (e.g. a
+# non-breaking hyphen, U+2011) raises UnicodeEncodeError and aborts the
+# whole Automata pipeline run -- confirmed live with real Groq output.
+# Reconfiguring stdout/stderr to UTF-8 (Python 3.7+) fixes this without
+# touching the third-party library; wrapped defensively since not every
+# stream (e.g. some test runners) supports reconfigure().
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 app = FastAPI(
     title="Governed Multi-Agent SRE Incident Triage & Remediation",

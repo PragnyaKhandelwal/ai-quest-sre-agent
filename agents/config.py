@@ -46,11 +46,24 @@ LYZR_ENABLED = bool(LYZR_API_KEY)
 # Model / inference configuration
 #
 # LLM provider fallback chain for real (non-simulated) inference calls:
-# OpenAI first, then Groq (OpenAI-API-compatible; Llama 3.1 8B Instant on
-# Groq's LPU hardware is publicly benchmarked at well under 1s for typical
-# prompt sizes, vs. multi-second round trips commonly seen with GPT-4o-mini
-# -- a direct win for the Latency Optimization checkpoint when no OpenAI
-# key is available), else local simulation only.
+# OpenAI first, then Groq (OpenAI-API-compatible; fast LPU-hosted inference,
+# and free vs. OpenAI's paid API), else local simulation only.
+#
+# GROQ MODEL NAMING (two different conventions -- confirmed by hitting both
+# APIs directly with a real key, not assumed):
+#   - LLM_MODEL is what agents/lyzr_agents.py puts into the Lyzr Agent
+#     Studio `provider` string ("groq/<LLM_MODEL>"). Lyzr Studio validates
+#     this against its OWN accepted-model list (surfaced in a live
+#     create_agent() error), which includes "llama-3.1-8b-instant" --
+#     Lyzr evidently maintains its own mapping independent of Groq's live
+#     catalog.
+#   - GROQ_DIRECT_MODEL is what agents/automata_pipeline.py's direct
+#     OpenAI-compatible client sends straight to Groq's own REST API
+#     (https://api.groq.com/openai/v1). Verified live against
+#     https://api.groq.com/openai/v1/models: "llama-3.1-8b-instant" is
+#     NOT in that catalog (404 model_not_found) -- Groq's own namespaced
+#     "openai/gpt-oss-20b" is. Recheck that endpoint with your own key if
+#     this ever starts failing again; Groq's catalog changes over time.
 # ---------------------------------------------------------------------------
 MODEL = os.getenv("MODEL", "gpt-4o-mini")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
@@ -59,9 +72,11 @@ TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
 if OPENAI_API_KEY:
     LLM_PROVIDER = "openai"
     LLM_MODEL = "gpt-4o-mini"
+    GROQ_DIRECT_MODEL = None  # unused -- OpenAI is active
 elif GROQ_API_KEY:
     LLM_PROVIDER = "groq"
     LLM_MODEL = "llama-3.1-8b-instant"
+    GROQ_DIRECT_MODEL = "openai/gpt-oss-20b"
 else:
     # No underlying LLM key at all -- this label is inert unless
     # LYZR_API_KEY is also set (see note above), but keep a sane default
@@ -69,6 +84,7 @@ else:
     # malformed provider string.
     LLM_PROVIDER = "openai"
     LLM_MODEL = "gpt-4o-mini"
+    GROQ_DIRECT_MODEL = None
 
 # ---------------------------------------------------------------------------
 # Governance thresholds

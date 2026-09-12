@@ -91,7 +91,7 @@ def build_automata_pipeline(incident_context: dict) -> Optional[Any]:
             openai_model = OpenAIModel(
                 api_key=config.OPENAI_API_KEY,
                 parameters={
-                    "model": "gpt-4o-mini",
+                    "model": config.LLM_MODEL,
                     "temperature": 0.1,  # Low temp for deterministic SRE decisions
                     "max_tokens": 800,  # Token optimized
                 },
@@ -100,7 +100,11 @@ def build_automata_pipeline(incident_context: dict) -> Optional[Any]:
             openai_model = _OpenAICompatibleModel(
                 api_key=config.GROQ_API_KEY,
                 parameters={
-                    "model": "llama-3.1-8b-instant",
+                    # NOT config.LLM_MODEL -- this calls Groq's raw REST API
+                    # directly, which uses a different model-name convention
+                    # than Lyzr Agent Studio's `provider` string. See
+                    # agents/config.py for the full explanation.
+                    "model": config.GROQ_DIRECT_MODEL,
                     "temperature": 0.1,
                     "max_tokens": 800,
                 },

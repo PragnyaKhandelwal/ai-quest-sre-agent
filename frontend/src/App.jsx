@@ -5,6 +5,8 @@ import AgentTrace from "./components/AgentTrace";
 import HITLQueue from "./components/HITLQueue";
 import RCAPanel from "./components/RCAPanel";
 import MetricsPanel from "./components/MetricsPanel";
+import VoiceBriefing from "./components/VoiceBriefing";
+import AIMSLog from "./components/AIMSLog";
 import {
   approveHitl,
   getHealth,
@@ -132,7 +134,9 @@ export default function App() {
         </div>
       </header>
 
-      <SimulatorPanel onTriggered={handleSimulateTriggered} />
+      <SimulatorPanel onTriggered={handleSimulateTriggered}>
+        <VoiceBriefing incident={selectedDetail} />
+      </SimulatorPanel>
 
       <div className="px-4 py-2 bg-panel border-b border-border">
         <MetricsPanel selectedIncident={selectedDetail} />
@@ -155,6 +159,8 @@ export default function App() {
           <RCAPanel incident={selectedDetail} />
         </div>
       )}
+
+      <AIMSLog />
     </div>
   );
 }

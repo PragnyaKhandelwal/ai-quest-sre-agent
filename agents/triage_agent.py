@@ -7,7 +7,7 @@ Clusters related raw alerts by service/namespace/alert type, deduplicates
 by a stable fingerprint hash within the configured dedup window, and
 assigns an incident severity P1-P4.
 
-# Lyzr ADK: Environment/Agent/Inference pattern
+LAYER 2 -> LAYER 3: Agent -> Inference (see lyzr_agents.py + lyzr_inference.py)
 """
 from __future__ import annotations
 
@@ -17,27 +17,11 @@ import time
 from typing import Dict, List, Tuple
 
 from agents import config
-from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
-from agents.metrics_tracker import estimate_tokens, tracker
-from agents.prompt_templates import TRIAGE_SYSTEM_PROMPT
+from agents.lyzr_agents import TRIAGE_AGENT
+from agents.lyzr_inference import run_inference
 from agents.schemas import Alert, AlertCluster, Severity, TriageResult
 
 AGENT_NAME = "TriageAndDedupAgent"
-
-# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
-# once at import time, reused for every triage call. Returns None (and
-# every call transparently uses local simulation) when no LYZR_API_KEY is
-# configured or the SDK/agent creation fails for any reason.
-_triage_lyzr_agent = create_lyzr_agent(
-    name=AGENT_NAME,
-    role="Expert SRE triage and deduplication specialist",
-    goal=(
-        "Cluster incoming cloud alerts by service+namespace+alert type, assign an "
-        "accurate P1-P4 severity grounded only in the provided alert data, and produce "
-        "a stable dedup fingerprint."
-    ),
-    instructions=TRIAGE_SYSTEM_PROMPT,
-)
 
 # fingerprint -> last_seen_timestamp, used for the 5-minute dedup window
 _SEEN_FINGERPRINTS: Dict[str, float] = {}
@@ -130,7 +114,6 @@ def run_triage(alerts: List[Alert], incident_id: str) -> Tuple[TriageResult, int
     deterministic P3 result on any unexpected failure so the pipeline never
     crashes on malformed agent output.
     """
-    metrics = tracker.start_call(AGENT_NAME, incident_id)
     try:
         clusters = _cluster_alerts(alerts)
         # The dedup fingerprint/cluster_id identity comes from the largest
@@ -150,25 +133,17 @@ def run_triage(alerts: List[Alert], incident_id: str) -> Tuple[TriageResult, int
             default=str,
         )
 
-        output_text = run_lyzr_agent(
-            _triage_lyzr_agent,
-            lambda _prompt=None: json.dumps(_simulate(primary, alerts, incident_id, is_dup)),
+        triage, meta = run_inference(
+            TRIAGE_AGENT,
             user_message,
+            incident_id,
+            fallback_fn=lambda: json.dumps(_simulate(primary, alerts, incident_id, is_dup)),
+            output_schema=TriageResult,
         )
 
-        try:
-            payload = json.loads(output_text)
-            triage = TriageResult(**payload)
-        except Exception:
-            # Lyzr returned something that doesn't validate -- fall back to
-            # the deterministic local result rather than propagate garbage.
-            triage = TriageResult(**_simulate(primary, alerts, incident_id, is_dup))
-
-        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
-        return triage, metrics.total_tokens, metrics.latency_ms
+        return triage, meta["total_tokens"], meta["latency_ms"]
 
     except Exception as exc:  # pragma: no cover - last-resort safety net
-        tracker.end_call(metrics, 0, 0)
         fallback = TriageResult(
             incident_id=incident_id,
             cluster_id="unknown",

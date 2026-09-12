@@ -67,6 +67,7 @@ SEVERITY_RULES = {
     "error rate": "P2",
     "disk": "P2",
     "eviction": "P2",
+    "throttl": "P2",
     "latency": "P3",
     "warning": "P4",
 }

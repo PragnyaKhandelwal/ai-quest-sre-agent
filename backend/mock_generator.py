@@ -227,17 +227,115 @@ def _scenario_4() -> Tuple[List[Alert], List[str]]:
     return alerts, logs
 
 
+# ---------------------------------------------------------------------------
+# Scenario 5: CPU Throttling (P2) -- ml-inference-service
+# ---------------------------------------------------------------------------
+def _scenario_5() -> Tuple[List[Alert], List[str]]:
+    alerts = [
+        Alert(
+            source="prometheus",
+            service="ml-inference-service",
+            namespace="production",
+            alertname="CPUThrottleHigh",
+            severity_hint="high",
+            title="ml-inference-service CPU throttle ratio at 89%",
+            description="Container CPU throttling ratio for ml-inference-service has reached 89% over the last 10 minutes.",
+            labels={"throttle_ratio": "89%"},
+        ),
+        Alert(
+            source="prometheus",
+            service="ml-inference-service",
+            namespace="production",
+            alertname="LatencySpike",
+            severity_hint="high",
+            title="ml-inference-service p99 latency spike to 8s",
+            description="p99 inference latency for ml-inference-service has spiked from 400ms to 8000ms.",
+            labels={},
+        ),
+        Alert(
+            source="pagerduty",
+            service="ml-inference-service",
+            namespace="production",
+            alertname="InferenceTimeout",
+            severity_hint="high",
+            title="ml-inference-service model inference timeout",
+            description="Multiple model inference requests are timing out after 10s.",
+            labels={},
+        ),
+    ]
+
+    logs = []
+    logs.append(f"{_ts(0)} INFO  ci-cd  deploy started: ml-inference-service image=ml-inference:v4.2.0 (model upgrade to v4)")
+    logs.append(f"{_ts(5)} INFO  kubelet  Started container ml-inference-service (revision v4.2.0) cpu.limit=500m cpu.request=250m")
+    logs.append(f"{_ts(8)} INFO  ml-inference-service  model v4 loaded, larger architecture than v3 (2.1x more FLOPs per inference)")
+    for i in range(1, 28):
+        throttle = min(89, 20 + i * 3)
+        logs.append(f"{_ts(i*8)} WARN  node-exporter  ml-inference-service cpu throttle ratio={throttle}% cpu.limit=500m")
+        if i % 5 == 0:
+            logs.append(f"{_ts(i*8+2)} WARN  ml-inference-service  p99 inference latency degrading, currently {400 + i*250}ms")
+    logs.append(f"{_ts(230)} ERROR ml-inference-service  p99 inference latency spike to 8000ms, cpu throttle ratio=89%")
+    logs.append(f"{_ts(235)} ERROR ml-inference-service  model inference timeout after 10s, request queue backing up")
+    logs.append(f"{_ts(238)} ERROR ml-inference-service  model inference timeout after 10s (request_id=8842)")
+    logs.append(f"{_ts(240)} WARN  kubelet  container ml-inference-service throttled by cgroup cpu.cfs_quota (limit=500m, no increase since v3)")
+    logs.append(f"{_ts(245)} ERROR alertmanager  confirmed root cause candidate: cpu limits not updated after model upgrade to v4, container being throttled")
+    return alerts, logs
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Certificate Expiry (P3) -- api-gateway TLS cert
+# ---------------------------------------------------------------------------
+def _scenario_6() -> Tuple[List[Alert], List[str]]:
+    alerts = [
+        Alert(
+            source="prometheus",
+            service="api-gateway",
+            namespace="production",
+            alertname="CertificateExpiringSoon",
+            severity_hint="medium",
+            title="api-gateway TLS certificate expires in 4 hours",
+            description="The TLS certificate for api-gateway (api.example.com) expires in approximately 4 hours.",
+            labels={"cert": "api-gateway-tls"},
+        ),
+        Alert(
+            source="prometheus",
+            service="api-gateway",
+            namespace="production",
+            alertname="TLSHandshakeFailures",
+            severity_hint="medium",
+            title="api-gateway HTTPS handshake failures starting",
+            description="Clients are beginning to see HTTPS handshake failures against api-gateway.",
+            labels={},
+        ),
+    ]
+
+    logs = []
+    logs.append(f"{_ts(0)} INFO  cert-manager  certificate api-gateway-tls renewal check: expires in 30 days, no action needed")
+    for i in range(1, 20):
+        logs.append(f"{_ts(i*20)} INFO  cert-manager  certificate api-gateway-tls renewal attempt {i} scheduled")
+        if i % 4 == 0:
+            logs.append(f"{_ts(i*20+3)} WARN  cert-manager  ACME challenge for api-gateway-tls: DNS-01 propagation check timed out")
+    logs.append(f"{_ts(390)} ERROR cert-manager  certificate api-gateway-tls renewal failed: ACME challenge DNS timeout after 5 retries")
+    logs.append(f"{_ts(395)} WARN  cert-manager  certificate api-gateway-tls expires in 4 hours, renewal still failing")
+    logs.append(f"{_ts(400)} ERROR ingress  TLS handshake failure for api.example.com: certificate nearing expiry")
+    logs.append(f"{_ts(405)} ERROR ingress  TLS handshake failure for api.example.com (client_ip=203.0.113.42)")
+    logs.append(f"{_ts(410)} WARN  alertmanager  no cert-expiry alert existed at 30-day threshold; first alert fired at 4-hour mark")
+    logs.append(f"{_ts(415)} ERROR alertmanager  confirmed root cause candidate: cert-manager renewal failed due to ACME challenge DNS timeout")
+    return alerts, logs
+
+
 _SCENARIOS = {
     1: ("Memory Leak (P1) - payment-service", _scenario_1),
     2: ("Bad Deploy (P2) - api-gateway", _scenario_2),
     3: ("DB Deadlock (P1) - order-service/postgres-primary", _scenario_3),
     4: ("Node Disk Full (P2) - logging-agent/worker-3", _scenario_4),
+    5: ("CPU Throttling (P2) - ml-inference-service", _scenario_5),
+    6: ("Certificate Expiry (P3) - api-gateway TLS cert", _scenario_6),
 }
 
 
 def get_scenario(scenario_number: int) -> Tuple[str, List[Alert], List[str]]:
     if scenario_number not in _SCENARIOS:
-        raise ValueError(f"Unknown scenario {scenario_number}. Valid: 1-4.")
+        raise ValueError(f"Unknown scenario {scenario_number}. Valid: 1-6.")
     name, builder = _SCENARIOS[scenario_number]
     alerts, logs = builder()
     # Fresh timestamps per trigger so repeated demo runs look live.
@@ -248,3 +346,45 @@ def get_scenario(scenario_number: int) -> Tuple[str, List[Alert], List[str]]:
 
 def list_scenarios() -> List[dict]:
     return [{"id": sid, "name": name} for sid, (name, _) in _SCENARIOS.items()]
+
+
+# ---------------------------------------------------------------------------
+# Tool-calling helpers (agents/tools.py): arbitrary log/metric lookups for a
+# service, independent of the /simulate/{n} incident flow. Backed by the
+# same scenario log corpora so results stay grounded in real, inspectable
+# data rather than being fabricated per call.
+# ---------------------------------------------------------------------------
+def get_logs_for_service(service: str, namespace: str = "production") -> List[str]:
+    """Return the log corpus for whichever canonical scenario matches this
+    service+namespace, or an empty list if none match."""
+    for _sid, (_name, builder) in _SCENARIOS.items():
+        alerts, logs = builder()
+        if any(a.service == service and a.namespace == namespace for a in alerts):
+            return logs
+    return []
+
+
+_METRIC_BASELINES = {
+    ("payment-service", "memory_usage_percent"): (91.0, 85.0, "rising"),
+    ("api-gateway", "error_rate"): (45.0, 5.0, "rising"),
+    ("order-service", "connection_pool_usage_percent"): (100.0, 90.0, "stable"),
+    ("logging-agent", "disk_usage_percent"): (98.0, 80.0, "rising"),
+    ("ml-inference-service", "cpu_throttle_ratio"): (89.0, 70.0, "rising"),
+    ("api-gateway", "cert_expiry_hours"): (4.0, 720.0, "falling"),
+}
+
+
+def get_metrics_for_service(service: str, metric_name: str) -> dict:
+    """Return a deterministic mock metric reading for a service+metric pair.
+    Falls back to a generic healthy-looking reading for unknown combos so
+    the tool never crashes on an unrecognized query."""
+    current, threshold, trend = _METRIC_BASELINES.get(
+        (service, metric_name), (12.0, 80.0, "stable")
+    )
+    return {
+        "metric_name": metric_name,
+        "current_value": current,
+        "threshold": threshold,
+        "is_breaching": current >= threshold,
+        "trend": trend,
+    }

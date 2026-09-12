@@ -63,6 +63,14 @@ export function rejectHitl(incidentId, requestId, decidedBy = "sre-oncall") {
   }).then(handle);
 }
 
+export function getAimsEvents() {
+  return fetch(`${BACKEND_URL}/aims/events`).then(handle);
+}
+
+export function getAimsEventsForIncident(incidentId) {
+  return fetch(`${BACKEND_URL}/aims/events/${incidentId}`).then(handle);
+}
+
 export function getRcaJsonUrl(incidentId) {
   return `${BACKEND_URL}/incidents/${incidentId}/rca`;
 }

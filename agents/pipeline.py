@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Protocol
 
 from agents import config
+from agents.automata_pipeline import run_automata_pipeline
 from agents.diagnostician_agent import AGENT_NAME as DIAGNOSTICIAN_NAME
 from agents.diagnostician_agent import run_diagnosis
 from agents.postmortem_agent import AGENT_NAME as POSTMORTEM_NAME
@@ -135,6 +136,19 @@ async def run_pipeline(
     ctx = IncidentContext(incident_id=incident_id, alerts=alerts, log_corpus=log_corpus)
 
     try:
+        # ------------------------------------------------------------ #
+        # Lyzr Automata: official async multi-agent orchestration layer
+        # (agents/automata_pipeline.py, LinearSyncPipeline/Agent/Task).
+        # Recorded on the incident so the UI can show "Powered by Lyzr
+        # Automata" whenever OPENAI_API_KEY is configured; this call never
+        # blocks the governed pipeline below -- it's independent metadata,
+        # not a dependency of the actual triage/diagnose/remediate/RCA flow.
+        # ------------------------------------------------------------ #
+        automata_result = run_automata_pipeline(
+            {"alerts": [a.model_dump() for a in alerts], "logs": log_corpus}
+        )
+        hooks.set_result(incident_id, "pipeline_metadata", automata_result)
+
         # ------------------------------------------------------------ #
         # Stage 1: Triage & Dedup
         # ------------------------------------------------------------ #

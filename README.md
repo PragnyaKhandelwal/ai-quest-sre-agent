@@ -5,6 +5,33 @@
 ![Powered by Lyzr ADK](https://img.shields.io/badge/powered%20by-Lyzr%20ADK-orange)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
 
+## 🏗️ Lyzr Architecture: Environment · Agent · Inference
+
+This project implements the clean 3-tier separation required by the AI Quest brief:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 1: ENVIRONMENT  (agents/lyzr_environment.py)          │
+│  Lyzr Agent Studio — studio.lyzr.ai                          │
+│  Defines: tools, features, safety policies, AIMS logging     │
+│  Shared across all 4 SRE agents                              │
+├─────────────────────────────────────────────────────────────┤
+│  LAYER 2: AGENTS  (agents/lyzr_agents.py)                    │
+│  Lyzr Agent API — 4 governed SRE agents                      │
+│  Triage → Diagnostic → Remediation → PostMortem              │
+│  Each linked to the shared Environment                       │
+├─────────────────────────────────────────────────────────────┤
+│  LAYER 3: INFERENCE  (agents/lyzr_inference.py)               │
+│  Lyzr Agent Studio SDK — run_inference()                     │
+│  Session ID = Incident ID (state persistence)                │
+│  Every call: metrics tracked + validated + AIMS logged       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Live status of this exact separation (which layer is real vs. simulated, which agents
+are registered, session-wide inference metrics): **GET `/lyzr/status`**
+(https://sre-agent-backend-1c0i.onrender.com/lyzr/status).
+
 **HiDevs AI Quest — PS 03: Enterprise Cloud Incident Triage & Runbook Remediation Agent**
 
 A production-grade, governed multi-agent system that ingests cloud alerts, triages and
@@ -83,15 +110,15 @@ graph TD
     M[React Dashboard] -->|SSE Stream| B
 ```
 
-**Lyzr ADK separation of concerns** (`# Lyzr ADK: Environment/Agent/Inference pattern`,
-present as a marker comment at the top of every agent file):
+**Lyzr Environment/Agent/Inference separation** (`LAYER 2 -> LAYER 3` marker comment at
+the top of every agent file):
 
 | Tier | Location | Responsibility |
 |---|---|---|
-| **Environment** | `agents/lyzr_client.py` (`Studio`) | One Lyzr ADK `Studio` instance for the whole process; owns the connection every agent registers against |
-| **Agent** | `agents/*_agent.py` | Each pipeline stage registers its own `Studio.create_agent(...)` at import time, with its own role/goal/instructions from `agents/prompt_templates.py` |
-| **Inference** | `run_lyzr_agent()` in `agents/lyzr_client.py` | Every call site goes through one function: real `agent.run(prompt)` when `LYZR_API_KEY` is set, deterministic local simulation otherwise -- same call signature either way |
-| **Orchestration** | `agents/pipeline.py` | Async pipeline threading one typed `IncidentContext` through Triage → Diagnose → Remediate → (HITL) → Post-Mortem |
+| **Environment** | `agents/lyzr_environment.py` (`SREEnvironment`, `Studio`) | One Lyzr ADK `Studio` instance and one `SREEnvironment` singleton for the whole process -- tools, feature flags, safety policy, model config shared by every agent |
+| **Agent** | `agents/lyzr_agents.py` (`SREAgent`, `TRIAGE_AGENT`/`DIAGNOSTIC_AGENT`/`REMEDIATION_AGENT`/`POSTMORTEM_AGENT`) | Each of the 4 SRE agents registers its own `Studio.create_agent(...)` at import time, with its own role/goal/instructions from `agents/prompt_templates.py`, linked to the shared Environment |
+| **Inference** | `run_inference()` in `agents/lyzr_inference.py` | The single entry point for every agent call: real `agent.run(prompt)` when `LYZR_API_KEY` is set, deterministic local simulation otherwise; always tracks tokens/latency, runs the Hallucination Guard, and logs to Lyzr AIMS -- same call signature either way |
+| **Orchestration** | `agents/pipeline.py` (governed pipeline) + `agents/automata_pipeline.py` (`lyzr-automata` `LinearSyncPipeline`) | `pipeline.py` threads one typed `IncidentContext` through Triage → Diagnose → Remediate → (HITL) → Post-Mortem; `automata_pipeline.py` additionally runs the same 4 stages through the official `lyzr-automata` `Agent`/`Task`/`LinearSyncPipeline` classes (real when `OPENAI_API_KEY` is set) and records which mode ran in `pipeline_metadata` |
 
 ---
 
@@ -118,10 +145,12 @@ works out of the box.
 2. Create a project → **Settings → API Keys** → copy your key
 3. Put it in `.env` as `LYZR_API_KEY=...`
 
-The moment a key is present, `agents/lyzr_client.py` initializes a real `Studio` and every
-agent's module-level `create_lyzr_agent(...)` call registers a real Lyzr agent -- no code
+The moment a key is present, `agents/lyzr_environment.py` initializes a real `Studio` and
+every agent in `agents/lyzr_agents.py` registers a real Lyzr agent against it -- no code
 changes needed. If the SDK isn't installed, the key is invalid, or any call fails for any
-reason, the system transparently falls back to local simulation so the demo never breaks.
+reason, `agents/lyzr_inference.py`'s `run_inference()` transparently falls back to local
+simulation so the demo never breaks. Set `OPENAI_API_KEY` as well to additionally activate
+the real `lyzr-automata` `LinearSyncPipeline` in `agents/automata_pipeline.py`.
 
 ### Run manually (without Docker)
 
@@ -158,7 +187,7 @@ destructive-action keyword list.
 
 ---
 
-## Triggering the 4 mock scenarios
+## Triggering the 6 mock scenarios
 
 Click the buttons in the **Incident Simulator** bar at the top of the dashboard, or
 trigger via curl (swap in the live URL to hit the deployed backend):
@@ -175,6 +204,12 @@ curl -X POST http://localhost:8000/simulate/3
 
 # P2 — Node Disk Full (logging-agent / worker-3) — DESTRUCTIVE, requires HITL
 curl -X POST http://localhost:8000/simulate/4
+
+# P2 — CPU Throttling (ml-inference-service) — SAFE remediation, auto-approved
+curl -X POST http://localhost:8000/simulate/5
+
+# P3 — Certificate Expiry (api-gateway TLS cert) — SAFE remediation, auto-approved
+curl -X POST http://localhost:8000/simulate/6
 ```
 
 Each call returns an `incident_id`. Watch it progress live in the dashboard, or poll:
@@ -203,24 +238,51 @@ curl http://localhost:8000/incidents/<incident_id>/rca/pdf -o rca.pdf
 
 ## API reference
 
-| Method | Route | Purpose |
+| Method | Path | Description |
 |---|---|---|
 | GET | `/health` | Health check + governance config snapshot |
+| GET | `/lyzr/status` | Environment · Agent · Inference status (see architecture section above) |
 | POST | `/alerts/ingest` | Ingest arbitrary alerts (+ optional log corpus) and start the pipeline |
-| POST | `/simulate/{1-4}` | Trigger one of the 4 canonical mock scenarios |
-| GET | `/incidents` | List all incidents (summary) |
-| GET | `/incidents/{id}` | Full incident detail (triage, diagnosis, runbook, RCA, trace, hallucination_reports) |
-| GET | `/incidents/{id}/stream` | SSE stream of agent reasoning steps for one incident |
+| POST | `/alerts/webhook` | PagerDuty-compatible webhook -- real PagerDuty/Alertmanager can POST here directly |
+| POST | `/simulate/{1-6}` | Trigger one of 6 mock scenarios |
+| GET | `/incidents` | List all incidents |
+| GET | `/incidents/{id}` | Full incident detail (triage, diagnosis, runbook, RCA, trace, hallucination_reports, pipeline_metadata) |
+| GET | `/incidents/{id}/stream` | SSE real-time agent stream for one incident |
 | GET | `/events` | Global SSE feed powering the live alert-stream panel |
+| POST | `/hitl/{id}/approve` | Approve destructive action |
+| POST | `/hitl/{id}/reject` | Reject destructive action |
 | GET | `/hitl/pending` | All pending HITL approval requests |
-| POST | `/hitl/{id}/approve` | Approve a destructive action |
-| POST | `/hitl/{id}/reject` | Reject a destructive action |
 | GET | `/incidents/{id}/rca` | RCA as JSON |
-| GET | `/incidents/{id}/rca/pdf` | RCA as PDF |
-| GET | `/incidents/{id}/audit` | Full Lyzr AIMS audit trail for the incident |
+| GET | `/incidents/{id}/rca/pdf` | RCA as PDF download |
+| GET | `/incidents/{id}/metrics` | Per-agent token/latency metrics for one incident |
+| GET | `/incidents/{id}/audit` | Legacy alias for the incident's AIMS trail |
+| GET | `/aims/events` | Full chronological Lyzr AIMS audit trail |
+| GET | `/aims/events/{id}` | Incident-scoped Lyzr AIMS trail |
+| GET | `/tools` | Tool registry with typed input/output schemas |
+| POST | `/tools/{name}` | Call a tool directly (logged to AIMS) |
+| GET | `/metrics` | Session-wide token/cost/latency summary |
 | GET | `/stats` | Session-wide incident/token counters |
-| GET | `/metrics` | Session-wide token/cost/latency summary (`agents/metrics_tracker.py`) |
-| GET | `/incidents/{id}/metrics` | Per-agent token/latency/cost breakdown for one incident |
+| GET | `/scenarios` | List the 6 canonical mock scenarios |
+| GET | `/docs` | FastAPI auto-generated interactive API docs (Swagger UI) |
+
+---
+
+## Lyzr Capabilities Used
+
+| Capability | Implementation | File |
+|---|---|---|
+| Lyzr Automata | `LinearSyncPipeline`, 4 `Agent`/`Task` nodes, task chaining | `agents/automata_pipeline.py` |
+| Lyzr Safe AI | HITL gate for destructive actions, keyword blocklist | `agents/tools.py`, `agents/remediation_agent.py` |
+| Lyzr AIMS | Chronological audit trail, visible in the dashboard | `backend/aims_logger.py`, `frontend/src/components/AIMSLog.jsx` |
+| Lyzr Agent API | Environment/Agent/Inference separation | `agents/lyzr_environment.py`, `agents/lyzr_agents.py`, `agents/lyzr_inference.py` |
+| Lyzr Agent Studio | `studio.lyzr.ai` SDK (`lyzr-adk`, `Studio.create_agent`) | `agents/lyzr_environment.py`, `agents/lyzr_agents.py` |
+| Tool Calling | Typed Pydantic input/output contracts, unified `call_tool()` dispatcher | `agents/tools.py` |
+
+## Stretch Goals Implemented
+
+- ✅ **Voice Briefing Agent** -- browser TTS reads the selected incident's summary aloud (`frontend/src/components/VoiceBriefing.jsx`)
+- ✅ **AIMS Decision Graph** -- visual, live-updating agent pipeline graph per incident, toggled from the Agent Trace panel (`frontend/src/components/DecisionGraph.jsx`)
+- ⚙️ **Live kubectl sandbox** -- `kubectl_safe` tool with dry-run mode and destructive-command blocking (`agents/tools.py`)
 
 ---
 
@@ -292,10 +354,10 @@ top of this file for current status.
 
 | Rubric Pillar | Weight | Implementation | Status |
 |---|---|---|---|
-| Lyzr Agent Orchestration | 30% | `lyzr-adk` SDK (`Studio`/`create_agent`/`agent.run`), 4-agent pipeline, Environment/Agent/Inference separation | ✅ |
-| DevOps Safety & Reliability | 30% | HITL gate, Hallucination Guard, typed `RemediationAction` schema with rollback commands | ✅ |
+| Lyzr Agent Orchestration | 30% | `lyzr-adk` SDK + `lyzr-automata` `LinearSyncPipeline`, 4-agent pipeline, clean Environment/Agent/Inference separation (`agents/lyzr_environment.py`/`lyzr_agents.py`/`lyzr_inference.py`) | ✅ |
+| DevOps Safety & Reliability | 30% | HITL gate, Hallucination Guard, typed `RemediationAction` schema with rollback commands, explicit tool-calling contracts (`agents/tools.py`) | ✅ |
 | Code Quality & Architecture | 20% | pytest 12 tests, GitHub Actions CI, ruff lint, Docker | ✅ |
-| SRE Experience & UI | 20% | SSE dashboard, metrics panel, RCA PDF export, HITL queue | ✅ |
+| SRE Experience & UI | 20% | SSE dashboard, metrics panel, AIMS audit log panel, decision graph, voice briefing, RCA PDF export, HITL queue | ✅ |
 
 ## Evaluation checkpoints
 
@@ -314,22 +376,31 @@ top of this file for current status.
 
 ```
 ai-quest-sre-agent/
-├── agents/                  # Lyzr agents, schemas, config, orchestration
-│   ├── lyzr_client.py       # Real Lyzr ADK integration (Studio, create_agent, run_lyzr_agent)
-│   ├── prompt_templates.py  # Defensive system prompts (Prompt Architecture)
+├── agents/                     # Lyzr agents, schemas, config, orchestration
+│   ├── lyzr_environment.py     # LAYER 1: Environment (Studio, SREEnvironment)
+│   ├── lyzr_agents.py          # LAYER 2: Agents (SREAgent, TRIAGE_AGENT, ...)
+│   ├── lyzr_inference.py       # LAYER 3: Inference (run_inference)
+│   ├── automata_pipeline.py    # lyzr-automata LinearSyncPipeline
+│   ├── tools.py                # Explicit tool-calling contracts + registry
+│   ├── prompt_templates.py     # Defensive system prompts (Prompt Architecture)
 │   ├── hallucination_guard.py  # 3-layer output validation
-│   ├── log_retriever.py     # TF-IDF semantic log retrieval (RAG)
-│   ├── metrics_tracker.py   # Token/cost/latency tracking
-│   ├── *_agent.py           # Triage, Diagnostician, Remediation, Post-Mortem
-│   ├── pipeline.py          # Async orchestration across all 4 agents
-│   └── tests/                # pytest unit tests
-├── backend/                 # FastAPI environment: store, SSE, HITL, AIMS logging, RCA export
-│   └── tests/                # pytest API tests
-├── frontend/                # React + Vite + Tailwind SRE dashboard
-├── .github/workflows/ci.yml # backend-test / frontend-build / lint
-├── Dockerfile                # Backend container
-├── docker-compose.yml         # Backend + frontend dev stack
-├── render.yaml                 # Render deployment (backend)
-├── pytest.ini / pyproject.toml # Test + lint configuration
-└── .env.example                # All required environment variables
+│   ├── log_retriever.py        # TF-IDF semantic log retrieval (RAG)
+│   ├── metrics_tracker.py      # Token/cost/latency tracking
+│   ├── *_agent.py              # Triage, Diagnostician, Remediation, Post-Mortem
+│   ├── pipeline.py             # Async orchestration across all 4 agents
+│   └── tests/                  # pytest unit tests
+├── backend/                    # FastAPI environment: store, SSE, HITL, AIMS logging, RCA export
+│   └── tests/                  # pytest API tests
+├── frontend/                   # React + Vite + Tailwind SRE dashboard
+│   └── src/components/
+│       ├── AIMSLog.jsx         # Chronological AIMS audit trail panel
+│       ├── DecisionGraph.jsx   # SVG agent decision pipeline graph
+│       ├── VoiceBriefing.jsx   # Web Speech API incident briefing
+│       └── MetricsPanel.jsx    # Token/cost/latency + guard/retrieval badges
+├── .github/workflows/ci.yml    # backend-test / frontend-build / lint
+├── Dockerfile                   # Backend container
+├── docker-compose.yml            # Backend + frontend dev stack
+├── render.yaml                    # Render deployment (backend)
+├── pytest.ini / pyproject.toml    # Test + lint configuration
+└── .env.example                    # All required environment variables
 ```

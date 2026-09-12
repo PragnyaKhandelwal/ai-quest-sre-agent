@@ -58,7 +58,7 @@ def test_simulate_creates_incident_and_returns_incident_id(client: TestClient):
 def test_simulate_invalid_scenario_returns_422(client: TestClient):
     resp = client.post("/simulate/99")
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "Scenario must be 1-4"
+    assert resp.json()["detail"] == "Scenario must be 1-6"
 
 
 def test_get_incident_returns_correct_structure(client: TestClient):

@@ -20,7 +20,7 @@ Groundedness: every output additionally passes through
 agents/hallucination_guard.py, which independently re-verifies that every
 cited log line is a verbatim substring of the corpus actually supplied.
 
-# Lyzr ADK: Environment/Agent/Inference pattern
+LAYER 2 -> LAYER 3: Agent -> Inference (see lyzr_agents.py + lyzr_inference.py)
 """
 from __future__ import annotations
 
@@ -30,11 +30,9 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from agents import config
-from agents.hallucination_guard import validate_agent_output
 from agents.log_retriever import retrieve_relevant_logs
-from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
-from agents.metrics_tracker import estimate_tokens, tracker
-from agents.prompt_templates import DIAGNOSTICIAN_SYSTEM_PROMPT
+from agents.lyzr_agents import DIAGNOSTIC_AGENT
+from agents.lyzr_inference import run_inference
 from agents.schemas import Alert, DiagnosisHypothesis, Evidence, TriageResult
 
 logger = logging.getLogger(__name__)
@@ -42,19 +40,6 @@ logger = logging.getLogger(__name__)
 AGENT_NAME = "RootCauseDiagnosticianAgent"
 
 RETRIEVAL_TOP_K = 15
-
-# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
-# once at import time, reused for every diagnosis call.
-_diagnostician_lyzr_agent = create_lyzr_agent(
-    name=AGENT_NAME,
-    role="Expert SRE root-cause diagnostician",
-    goal=(
-        "Form a single, technically specific root-cause hypothesis grounded ONLY in the "
-        "log lines provided, citing exact verbatim evidence and calibrating confidence to "
-        "the strength of that evidence."
-    ),
-    instructions=DIAGNOSTICIAN_SYSTEM_PROMPT,
-)
 
 
 @dataclass
@@ -104,6 +89,24 @@ _CAUSE_LIBRARY: List[CauseHypothesis] = [
         ),
         keywords=["disk usage", "eviction", "logrotate", "no space left", "audit log", "98%"],
         affected_components=["worker-3 node", "logging-agent"],
+    ),
+    CauseHypothesis(
+        cause=(
+            "CPU limits were not increased after a model upgrade, so the "
+            "container is being throttled by the Kubernetes CFS quota, "
+            "causing inference latency spikes and request timeouts."
+        ),
+        keywords=["cpu throttle", "throttled", "cpu.limit", "cfs_quota", "model upgrade", "inference latency"],
+        affected_components=["ml-inference-service pods", "cpu limits"],
+    ),
+    CauseHypothesis(
+        cause=(
+            "cert-manager's certificate renewal failed because the ACME "
+            "DNS-01 challenge kept timing out, leaving the TLS certificate "
+            "to approach expiry and causing HTTPS handshake failures."
+        ),
+        keywords=["acme challenge", "dns timeout", "renewal failed", "cert-manager", "handshake failure", "expires in"],
+        affected_components=["api-gateway-tls certificate", "cert-manager"],
     ),
 ]
 
@@ -175,7 +178,6 @@ def run_diagnosis(
     the triage summary alone (e.g. "OOMKilled", "lock_timeout"), so
     retrieval recall is meaningfully better against the real alert text.
     """
-    metrics = tracker.start_call(AGENT_NAME, triage.incident_id)
     try:
         # --- Retrieval (RAG pattern): narrow the full corpus down to the
         # top-K lines most semantically relevant to this incident, and hand
@@ -199,17 +201,18 @@ def run_diagnosis(
             }
         )
 
-        output_text = run_lyzr_agent(
-            _diagnostician_lyzr_agent,
-            lambda _prompt=None: json.dumps(_simulate(triage, retrieved_lines, retrieval_scores)),
+        # run_inference() (LAYER 3) applies the Hallucination Guard
+        # internally (schema + hedge-language + grounding, verified against
+        # the FULL original corpus, not just the retrieved subset) whenever
+        # an output_schema is supplied, and logs the call to Lyzr AIMS.
+        diagnosis, meta = run_inference(
+            DIAGNOSTIC_AGENT,
             user_message,
+            triage.incident_id,
+            fallback_fn=lambda: json.dumps(_simulate(triage, retrieved_lines, retrieval_scores)),
+            output_schema=DiagnosisHypothesis,
+            log_corpus=log_corpus,
         )
-
-        try:
-            payload = json.loads(output_text)
-            diagnosis = DiagnosisHypothesis(**payload)
-        except Exception:
-            diagnosis = DiagnosisHypothesis(**_simulate(triage, retrieved_lines, retrieval_scores))
 
         # Second, independent enforcement of the confidence gate -- even if
         # the model (or the simulation) forgot to set the flag, we set it
@@ -217,21 +220,21 @@ def run_diagnosis(
         if diagnosis.confidence < config.CONFIDENCE_THRESHOLD:
             diagnosis.requires_human_review = True
 
-        # Hallucination Guard: schema + hedge-language + grounding checks,
-        # verified against the FULL original corpus (not just the retrieved
-        # subset) so a citation is only valid if it truly exists anywhere.
-        diagnosis, validation_report = validate_agent_output(
-            diagnosis, DiagnosisHypothesis, log_corpus=log_corpus, agent_name=AGENT_NAME
-        )
+        validation_report = meta.get("validation") or {
+            "agent": AGENT_NAME, "schema_valid": True, "hallucination_signals": [],
+            "grounding_valid": True, "invalid_citations": [], "passed": True,
+        }
+        # Keep the report keyed by the pipeline-level agent name (matches
+        # AgentTraceStep.agent_name) rather than the Lyzr Studio agent's own
+        # name, so the UI can match a report to its trace step.
+        validation_report["agent"] = AGENT_NAME
         if not validation_report["passed"]:
             diagnosis.requires_human_review = True
             logger.warning(f"Diagnosis for {triage.incident_id} failed validation: {validation_report}")
 
-        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
-        return diagnosis, metrics.total_tokens, metrics.latency_ms, validation_report
+        return diagnosis, meta["total_tokens"], meta["latency_ms"], validation_report
 
     except Exception as exc:  # pragma: no cover
-        tracker.end_call(metrics, 0, 0)
         fallback = DiagnosisHypothesis(
             incident_id=triage.incident_id,
             cause=f"Diagnostician agent failed ({exc}).",

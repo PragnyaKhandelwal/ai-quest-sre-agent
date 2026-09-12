@@ -43,6 +43,10 @@ class IncidentState:
     # agents/hallucination_guard.py validation reports (one per diagnosis),
     # surfaced via GET /incidents/{id} so groundedness is visible to judges.
     hallucination_reports: List[dict] = field(default_factory=list)
+    # agents/automata_pipeline.py's run_automata_pipeline() result -- shows
+    # whether this incident ran through the real lyzr-automata
+    # LinearSyncPipeline or its simulation branch.
+    pipeline_metadata: Optional[dict] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     scenario: Optional[str] = None
@@ -66,6 +70,7 @@ class IncidentState:
             "rca": self.rca.model_dump() if self.rca else None,
             "trace": [t.model_dump() for t in self.trace],
             "hallucination_reports": self.hallucination_reports,
+            "pipeline_metadata": self.pipeline_metadata,
             "pending_hitl": [
                 req.model_dump() for req, _ in self.hitl_pending.values() if req.status == HITLStatus.PENDING
             ],
@@ -193,7 +198,7 @@ class StoreHooks:
         incident = INCIDENTS.get(incident_id)
         if not incident:
             return
-        if key not in ("triage", "diagnosis", "runbook", "rca"):
+        if key not in ("triage", "diagnosis", "runbook", "rca", "pipeline_metadata"):
             raise ValueError(f"Unknown pipeline result key: {key}")
         setattr(incident, key, value)
         incident.updated_at = time.time()

@@ -20,7 +20,7 @@ Safety contract:
   * Every action carries an explicit rollback_command (or a documented
     reason none applies), per REMEDIATION_SYSTEM_PROMPT's defensive rules.
 
-# Lyzr ADK: Environment/Agent/Inference pattern
+LAYER 2 -> LAYER 3: Agent -> Inference (see lyzr_agents.py + lyzr_inference.py)
 """
 from __future__ import annotations
 
@@ -29,25 +29,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 from agents import config
-from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
-from agents.metrics_tracker import estimate_tokens, tracker
-from agents.prompt_templates import REMEDIATION_SYSTEM_PROMPT
+from agents.lyzr_agents import REMEDIATION_AGENT
+from agents.lyzr_inference import run_inference
 from agents.schemas import DiagnosisHypothesis, RemediationAction, RiskLevel, RunbookProposal
 
 AGENT_NAME = "RemediationPlannerAgent"
-
-# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
-# once at import time, reused for every remediation call.
-_remediation_lyzr_agent = create_lyzr_agent(
-    name=AGENT_NAME,
-    role="Expert SRE remediation planner operating under a strict safety policy",
-    goal=(
-        "Propose an ordered runbook of remediation steps for a diagnosed root cause. "
-        "Classify every action as SAFE or DESTRUCTIVE, never auto-approve a destructive "
-        "action, and give every action an explicit rollback path."
-    ),
-    instructions=REMEDIATION_SYSTEM_PROMPT,
-)
 
 
 def is_destructive_command(command: str) -> bool:
@@ -141,6 +127,30 @@ _RUNBOOK_LIBRARY: List[RunbookTemplate] = [
             },
         ],
     ),
+    RunbookTemplate(
+        match_keywords=["cpu throttle", "throttled", "cfs_quota", "model upgrade"],
+        steps=[
+            {
+                "description": "Increase CPU limit for ml-inference-service to match the upgraded model's compute needs",
+                "command": "kubectl set resources deployment/ml-inference-service -n production --limits=cpu=2 --requests=cpu=1",
+                "risk_level": RiskLevel.LOW,
+                "reason": "Non-destructive resource limit increase; Kubernetes performs a rolling update. Safe to auto-execute.",
+                "rollback_command": "kubectl set resources deployment/ml-inference-service -n production --limits=cpu=500m --requests=cpu=250m",
+            },
+        ],
+    ),
+    RunbookTemplate(
+        match_keywords=["acme challenge", "dns timeout", "renewal failed", "cert-manager"],
+        steps=[
+            {
+                "description": "Trigger a manual certificate renewal for api-gateway-tls via cert-manager's CLI",
+                "command": "cmctl renew api-gateway-tls -n production",
+                "risk_level": RiskLevel.LOW,
+                "reason": "Non-destructive: forces a fresh ACME renewal attempt without deleting the existing (still-valid) certificate. Safe to auto-execute.",
+                "rollback_command": "N/A -- triggering a renewal is safe and idempotent; the old certificate remains valid until actual expiry.",
+            },
+        ],
+    ),
 ]
 
 _DEFAULT_TEMPLATE = RunbookTemplate(
@@ -204,7 +214,6 @@ def _simulate(diagnosis: DiagnosisHypothesis) -> Dict:
 
 
 def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, int, float]:
-    metrics = tracker.start_call(AGENT_NAME, diagnosis.incident_id)
     try:
         user_message = json.dumps(
             {
@@ -215,17 +224,13 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
             }
         )
 
-        output_text = run_lyzr_agent(
-            _remediation_lyzr_agent,
-            lambda _prompt=None: json.dumps(_simulate(diagnosis)),
+        proposal, meta = run_inference(
+            REMEDIATION_AGENT,
             user_message,
+            diagnosis.incident_id,
+            fallback_fn=lambda: json.dumps(_simulate(diagnosis)),
+            output_schema=RunbookProposal,
         )
-
-        try:
-            payload = json.loads(output_text)
-            proposal = RunbookProposal(**payload)
-        except Exception:
-            proposal = RunbookProposal(**_simulate(diagnosis))
 
         # Independent re-verification pass (defense in depth #1): re-derive
         # is_destructive / hitl_required for every action regardless of what
@@ -243,11 +248,9 @@ def run_remediation(diagnosis: DiagnosisHypothesis) -> Tuple[RunbookProposal, in
         proposal.auto_executed_steps = auto_executed
         proposal.blocked_steps = blocked
 
-        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
-        return proposal, metrics.total_tokens, metrics.latency_ms
+        return proposal, meta["total_tokens"], meta["latency_ms"]
 
     except Exception as exc:  # pragma: no cover
-        tracker.end_call(metrics, 0, 0)
         fallback = RunbookProposal(
             incident_id=diagnosis.incident_id,
             actions=[

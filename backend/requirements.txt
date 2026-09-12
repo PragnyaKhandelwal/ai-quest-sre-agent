@@ -1,15 +1,25 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
-requests==2.32.3
+# Pinned to 2.31.0 (not the latest 2.32.3) because lyzr-automata==0.1.1
+# exactly pins requests==2.31.0 -- pip's resolver refuses two conflicting
+# exact pins for the same package.
+requests==2.31.0
 python-dotenv==1.0.1
 reportlab==4.2.5
 
-# Real Lyzr ADK integration (agents/lyzr_client.py). Note: `pip install
-# sklearn` is a broken/deprecated meta-package that errors on install --
-# the real PyPI package is `scikit-learn`, imported as `sklearn`.
+# Real Lyzr ADK integration (agents/lyzr_environment.py, agents/lyzr_agents.py,
+# agents/lyzr_inference.py). Note: `pip install sklearn` is a broken/deprecated
+# meta-package that errors on install -- the real PyPI package is
+# `scikit-learn`, imported as `sklearn`.
 lyzr-adk==0.1.12
 scikit-learn==1.5.2
+
+# Lyzr Automata: official async multi-agent orchestration layer
+# (agents/automata_pipeline.py). Only activates when OPENAI_API_KEY is set;
+# otherwise agents/automata_pipeline.py runs its simulation branch and this
+# package's OpenAIModel/LinearSyncPipeline classes are never invoked.
+lyzr-automata==0.1.1
 
 # Test dependencies (also used by .github/workflows/ci.yml)
 pytest==8.3.4

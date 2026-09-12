@@ -1,4 +1,5 @@
 import { useState } from "react";
+import DecisionGraph from "./DecisionGraph";
 
 const AGENT_COLORS = {
   TriageAndDedupAgent: "bg-cyan/15 text-cyan",
@@ -127,6 +128,8 @@ function TraceStep({ step, hallucinationReport }) {
 }
 
 export default function AgentTrace({ incident }) {
+  const [view, setView] = useState("trace"); // "trace" | "graph"
+
   if (!incident) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500 text-sm bg-base">
@@ -137,26 +140,49 @@ export default function AgentTrace({ incident }) {
 
   return (
     <div className="flex flex-col h-full bg-base">
-      <div className="px-4 py-3 border-b border-border">
-        <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-300">
-          Agent Reasoning Trace
-        </h2>
-        <div className="text-xs text-gray-500 mt-0.5 font-mono-log">{incident.incident_id}</div>
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-300">
+            Agent Reasoning Trace
+          </h2>
+          <div className="text-xs text-gray-500 mt-0.5 font-mono-log">{incident.incident_id}</div>
+        </div>
+        <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
+          <button
+            onClick={() => setView("trace")}
+            className={`px-2.5 py-1 transition ${view === "trace" ? "bg-cyan/20 text-cyan" : "text-gray-500 hover:text-gray-300"}`}
+          >
+            Trace
+          </button>
+          <button
+            onClick={() => setView("graph")}
+            className={`px-2.5 py-1 transition ${view === "graph" ? "bg-cyan/20 text-cyan" : "text-gray-500 hover:text-gray-300"}`}
+          >
+            Decision Graph
+          </button>
+        </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-4 space-y-3">
-        {incident.trace.length === 0 && (
-          <div className="text-gray-500 text-sm">Waiting for agents to start reasoning...</div>
-        )}
-        {incident.trace.map((step) => {
-          // Each hallucination_guard.py report is keyed by agent name (only
-          // the diagnostician runs through the guard today); match it to
-          // its trace step so the badge renders inline with that step.
-          const hallucinationReport = (incident.hallucination_reports || []).find(
-            (r) => r.agent === step.agent_name
-          );
-          return <TraceStep key={step.step_id} step={step} hallucinationReport={hallucinationReport} />;
-        })}
-      </div>
+
+      {view === "graph" ? (
+        <div className="flex-1 overflow-y-auto">
+          <DecisionGraph incident={incident} />
+        </div>
+      ) : (
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {incident.trace.length === 0 && (
+            <div className="text-gray-500 text-sm">Waiting for agents to start reasoning...</div>
+          )}
+          {incident.trace.map((step) => {
+            // Each hallucination_guard.py report is keyed by agent name (only
+            // the diagnostician runs through the guard today); match it to
+            // its trace step so the badge renders inline with that step.
+            const hallucinationReport = (incident.hallucination_reports || []).find(
+              (r) => r.agent === step.agent_name
+            );
+            return <TraceStep key={step.step_id} step={step} hallucinationReport={hallucinationReport} />;
+          })}
+        </div>
+      )}
     </div>
   );
 }

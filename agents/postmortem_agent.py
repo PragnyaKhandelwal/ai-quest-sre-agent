@@ -8,16 +8,15 @@ remediation + HITL decisions + timeline) and produces a blameless RCA
 report. The report is grounded entirely in the structured objects produced
 by the earlier pipeline stages -- no new facts are introduced.
 
-# Lyzr ADK: Environment/Agent/Inference pattern
+LAYER 2 -> LAYER 3: Agent -> Inference (see lyzr_agents.py + lyzr_inference.py)
 """
 from __future__ import annotations
 
 import json
 from typing import List, Tuple
 
-from agents.lyzr_client import create_lyzr_agent, run_lyzr_agent
-from agents.metrics_tracker import estimate_tokens, tracker
-from agents.prompt_templates import POSTMORTEM_SYSTEM_PROMPT
+from agents.lyzr_agents import POSTMORTEM_AGENT
+from agents.lyzr_inference import run_inference
 from agents.schemas import (
     Alert,
     DiagnosisHypothesis,
@@ -28,19 +27,6 @@ from agents.schemas import (
 )
 
 AGENT_NAME = "PostMortemRCAAgent"
-
-# Module-level Lyzr agent (Environment/Agent/Inference pattern): created
-# once at import time, reused for every post-mortem call.
-_postmortem_lyzr_agent = create_lyzr_agent(
-    name=AGENT_NAME,
-    role="Blameless post-incident review analyst",
-    goal=(
-        "Produce a structured, blameless RCA grounded entirely in the incident record "
-        "provided: timeline, root cause, contributing factors, and specific, actionable "
-        "prevention recommendations."
-    ),
-    instructions=POSTMORTEM_SYSTEM_PROMPT,
-)
 
 
 def _simulate(
@@ -87,6 +73,16 @@ def _simulate(
             "Add logrotate configuration to all logging-agent daemonsets.",
             "Add disk-usage alerting at 80% threshold, well before eviction thresholds.",
         ]
+    elif "cpu limit" in cause_low or "throttl" in cause_low:
+        prevention = [
+            "Add resource-limit validation to the CI pipeline for every model/image upgrade.",
+            "Add CPU-throttle-ratio alerting at 70% threshold, well before p99 latency degrades.",
+        ]
+    elif "cert-manager" in cause_low or "acme" in cause_low or "certificate" in cause_low:
+        prevention = [
+            "Add cert-manager Prometheus alerting at a 30-day expiry threshold, not just at the 4-hour mark.",
+            "Add a secondary DNS provider fallback for ACME DNS-01 challenges to avoid single-provider timeouts.",
+        ]
     else:
         prevention = ["Conduct a deeper investigation; automated pattern library found no exact match."]
 
@@ -121,7 +117,6 @@ def run_postmortem(
     runbook: RunbookProposal,
     timeline: List[TimelineEvent],
 ) -> Tuple[RCAReport, int, float]:
-    metrics = tracker.start_call(AGENT_NAME, incident_id)
     try:
         user_message = json.dumps(
             {
@@ -134,23 +129,17 @@ def run_postmortem(
             default=str,
         )
 
-        output_text = run_lyzr_agent(
-            _postmortem_lyzr_agent,
-            lambda _prompt=None: json.dumps(_simulate(incident_id, alerts, triage, diagnosis, runbook, timeline)),
+        rca, meta = run_inference(
+            POSTMORTEM_AGENT,
             user_message,
+            incident_id,
+            fallback_fn=lambda: json.dumps(_simulate(incident_id, alerts, triage, diagnosis, runbook, timeline)),
+            output_schema=RCAReport,
         )
 
-        try:
-            payload = json.loads(output_text)
-            rca = RCAReport(**payload)
-        except Exception:
-            rca = RCAReport(**_simulate(incident_id, alerts, triage, diagnosis, runbook, timeline))
-
-        tracker.end_call(metrics, estimate_tokens(user_message), estimate_tokens(output_text))
-        return rca, metrics.total_tokens, metrics.latency_ms
+        return rca, meta["total_tokens"], meta["latency_ms"]
 
     except Exception as exc:  # pragma: no cover
-        tracker.end_call(metrics, 0, 0)
         fallback = RCAReport(
             incident_id=incident_id,
             title=f"RCA generation failed for {incident_id}",

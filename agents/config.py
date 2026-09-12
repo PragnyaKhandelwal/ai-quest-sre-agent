@@ -27,20 +27,48 @@ LYZR_API_KEY = os.getenv("LYZR_API_KEY", "")
 LYZR_BASE_URL = os.getenv("LYZR_BASE_URL", "https://agent.api.lyzr.ai/v2")
 LYZR_AIMS_URL = os.getenv("LYZR_AIMS_URL", "https://aims.api.lyzr.ai/v1")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # If no Lyzr key is configured, the system runs fully in "local simulation"
 # mode: every agent falls back to deterministic, schema-validated local
 # reasoning instead of calling out to the Lyzr Agent API. This keeps the
 # demo 100% functional with zero external dependencies / zero API cost,
 # while the exact same code path is used the moment real keys are supplied.
+#
+# NOTE: this specifically gates the Lyzr Studio *connection*
+# (agents/lyzr_environment.py's `Studio(api_key=LYZR_API_KEY)`), which is
+# independent of LLM_PROVIDER/LLM_MODEL below -- LYZR_API_KEY controls
+# whether real inference happens at all; LLM_PROVIDER controls which
+# underlying model a real call would be routed to.
 LYZR_ENABLED = bool(LYZR_API_KEY)
 
 # ---------------------------------------------------------------------------
 # Model / inference configuration
+#
+# LLM provider fallback chain for real (non-simulated) inference calls:
+# OpenAI first, then Groq (OpenAI-API-compatible; Llama 3.1 8B Instant on
+# Groq's LPU hardware is publicly benchmarked at well under 1s for typical
+# prompt sizes, vs. multi-second round trips commonly seen with GPT-4o-mini
+# -- a direct win for the Latency Optimization checkpoint when no OpenAI
+# key is available), else local simulation only.
 # ---------------------------------------------------------------------------
 MODEL = os.getenv("MODEL", "gpt-4o-mini")
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
+
+if OPENAI_API_KEY:
+    LLM_PROVIDER = "openai"
+    LLM_MODEL = "gpt-4o-mini"
+elif GROQ_API_KEY:
+    LLM_PROVIDER = "groq"
+    LLM_MODEL = "llama-3.1-8b-instant"
+else:
+    # No underlying LLM key at all -- this label is inert unless
+    # LYZR_API_KEY is also set (see note above), but keep a sane default
+    # rather than "none" so a real create_agent() call never gets a
+    # malformed provider string.
+    LLM_PROVIDER = "openai"
+    LLM_MODEL = "gpt-4o-mini"
 
 # ---------------------------------------------------------------------------
 # Governance thresholds

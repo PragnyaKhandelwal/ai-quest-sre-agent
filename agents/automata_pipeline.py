@@ -21,8 +21,9 @@ IncidentState.pipeline_metadata.
 """
 
 import logging
-import os
 from typing import Any, Optional
+
+from agents import config
 
 logger = logging.getLogger(__name__)
 
@@ -34,11 +35,35 @@ try:
     from lyzr_automata.tasks.task_base import Task as AutomataTask
     from lyzr_automata.tasks.task_literals import InputType, OutputType
 
-    AUTOMATA_AVAILABLE = bool(os.getenv("OPENAI_API_KEY"))
+    AUTOMATA_AVAILABLE = bool(config.OPENAI_API_KEY or config.GROQ_API_KEY)
     if AUTOMATA_AVAILABLE:
-        logger.info("Lyzr Automata initialized — pipeline mode active")
+        logger.info(f"Lyzr Automata initialized — pipeline mode active ({config.LLM_PROVIDER})")
     else:
-        logger.info("Lyzr Automata available but no OPENAI_API_KEY — simulation mode")
+        logger.info("Lyzr Automata available but no OPENAI_API_KEY/GROQ_API_KEY — simulation mode")
+
+    class _OpenAICompatibleModel(OpenAIModel):
+        """OpenAIModel subclass that supports pointing the underlying OpenAI
+        SDK client at an OpenAI-API-compatible endpoint (e.g. Groq) via
+        base_url.
+
+        lyzr_automata.ai_models.openai.OpenAIModel (as of lyzr-automata==0.1.1)
+        hardcodes `self.client = OpenAI(api_key=api_key)` with no base_url
+        support, and forwards `self.parameters` verbatim into
+        `client.chat.completions.create(**self.parameters, ...)`. A raw
+        `base_url` key left inside `parameters` would therefore either be
+        silently dropped or raise a TypeError at inference time -- this
+        subclass pops it out and uses it to configure the client instead,
+        so Groq (or any other OpenAI-compatible provider) actually works.
+        """
+
+        def __init__(self, api_key: str, parameters: dict, base_url: Optional[str] = None):
+            from openai import OpenAI
+
+            params = dict(parameters)
+            params.pop("base_url", None)
+            self.parameters = params
+            self.client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+
 except ImportError:
     AUTOMATA_AVAILABLE = False
     logger.warning("lyzr-automata not installed — running simulation pipeline")
@@ -58,15 +83,29 @@ def build_automata_pipeline(incident_context: dict) -> Optional[Any]:
         return None
 
     try:
-        # -- Model ------------------------------------------------------------
-        openai_model = OpenAIModel(
-            api_key=os.getenv("OPENAI_API_KEY"),
-            parameters={
-                "model": "gpt-4o-mini",
-                "temperature": 0.1,  # Low temp for deterministic SRE decisions
-                "max_tokens": 800,  # Token optimized
-            },
-        )
+        # -- Model --------------------------------------------------------------
+        # OpenAI first; Groq (OpenAI-API-compatible) as a fallback when no
+        # OpenAI key is configured -- see agents/config.py for the priority
+        # chain and the Latency Optimization rationale.
+        if config.OPENAI_API_KEY:
+            openai_model = OpenAIModel(
+                api_key=config.OPENAI_API_KEY,
+                parameters={
+                    "model": "gpt-4o-mini",
+                    "temperature": 0.1,  # Low temp for deterministic SRE decisions
+                    "max_tokens": 800,  # Token optimized
+                },
+            )
+        else:
+            openai_model = _OpenAICompatibleModel(
+                api_key=config.GROQ_API_KEY,
+                parameters={
+                    "model": "llama-3.1-8b-instant",
+                    "temperature": 0.1,
+                    "max_tokens": 800,
+                },
+                base_url="https://api.groq.com/openai/v1",
+            )
 
         # -- Agent 1: Triage ----------------------------------------------------
         triage_agent = AutomataAgent(
@@ -224,5 +263,5 @@ def run_automata_pipeline(incident_context: dict) -> dict:
         "pipeline_used": "simulation",
         "pipeline_name": "SRE Incident Response Pipeline (Simulation)",
         "tasks_completed": 4,
-        "result": "Simulation mode — set OPENAI_API_KEY to activate Lyzr Automata",
+        "result": "Simulation mode — set OPENAI_API_KEY or GROQ_API_KEY to activate Lyzr Automata",
     }

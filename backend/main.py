@@ -121,7 +121,12 @@ async def lyzr_status():
             "environment_name": sre_environment.config["environment_name"],
             "features": sre_environment.config["features"],
             "tools_available": sre_environment.config["tools"],
+            # "mode" reflects the Lyzr Studio connection itself (gated on
+            # LYZR_API_KEY) -- independent of which underlying LLM a real
+            # call would route to, which is llm_provider/llm_model below.
             "mode": sre_environment.config["mode"],
+            "llm_provider": sre_environment.config["model_config"]["provider"],
+            "llm_model": sre_environment.config["model_config"]["model"],
             "studio_url": "https://studio.lyzr.ai",
         },
         "layer_2_agents": {

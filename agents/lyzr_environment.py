@@ -17,6 +17,8 @@ import logging
 import os
 from typing import Optional
 
+from agents import config
+
 logger = logging.getLogger(__name__)
 
 LYZR_API_KEY = os.getenv("LYZR_API_KEY", "")
@@ -108,7 +110,8 @@ class SREEnvironment:
                 "max_confidence_to_auto_execute": 0.95,
             },
             "model_config": {
-                "model": "gpt-4o-mini",
+                "provider": config.LLM_PROVIDER,  # "openai" or "groq" -- see agents/config.py
+                "model": config.LLM_MODEL,
                 "temperature": 0.1,
                 "max_tokens": 800,
             },

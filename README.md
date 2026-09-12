@@ -149,8 +149,31 @@ The moment a key is present, `agents/lyzr_environment.py` initializes a real `St
 every agent in `agents/lyzr_agents.py` registers a real Lyzr agent against it -- no code
 changes needed. If the SDK isn't installed, the key is invalid, or any call fails for any
 reason, `agents/lyzr_inference.py`'s `run_inference()` transparently falls back to local
-simulation so the demo never breaks. Set `OPENAI_API_KEY` as well to additionally activate
-the real `lyzr-automata` `LinearSyncPipeline` in `agents/automata_pipeline.py`.
+simulation so the demo never breaks.
+
+### LLM provider: OpenAI, with Groq as a fallback
+
+Set `OPENAI_API_KEY` to additionally activate the real `lyzr-automata` `LinearSyncPipeline`
+in `agents/automata_pipeline.py` and route real Lyzr Agent Studio inference through
+`gpt-4o-mini`.
+
+If `OPENAI_API_KEY` is not set but `GROQ_API_KEY` is (get one free at
+[console.groq.com/keys](https://console.groq.com/keys)), the system automatically falls
+back to Groq's `llama-3.1-8b-instant` instead -- Groq's API is OpenAI-compatible, so the
+same `agents/automata_pipeline.py` code path is reused with a `base_url` override to
+`https://api.groq.com/openai/v1`. Groq's LPU hardware is publicly benchmarked at
+several hundred tokens/second for 8B-class models, which is meaningfully faster than
+typical cloud GPU inference for models like GPT-4o-mini -- a direct assist for this
+project's Latency Optimization checkpoint whenever only a Groq key is available. (These
+are Groq's own published figures, not a benchmark measured by this repo -- the exact gap
+depends on prompt size, region, and provider load at request time.)
+
+Priority order, defined once in `agents/config.py` (`LLM_PROVIDER`/`LLM_MODEL`) and read
+by every layer: **`OPENAI_API_KEY` > `GROQ_API_KEY` > local simulation.** Check which one
+is active via `GET /lyzr/status` → `layer_1_environment.llm_provider`. Note that this is
+independent of `layer_1_environment.mode`, which reflects only whether the Lyzr Studio
+connection itself is live (gated on `LYZR_API_KEY`) -- `llm_provider` tells you which
+underlying model a *real* Lyzr call would be routed to, once Lyzr Studio is connected.
 
 ### Run manually (without Docker)
 
@@ -366,9 +389,9 @@ top of this file for current status.
 | Hallucination Mitigation | 3-layer guard: schema validation + hedge-language signal detection + grounding check (`agents/hallucination_guard.py`) |
 | Groundedness | Every log citation independently re-verified as a verbatim substring of the actual corpus supplied to the agent |
 | Retrieval Quality | TF-IDF semantic retrieval (`agents/log_retriever.py`), top-15 relevant logs injected, cosine-similarity scores stored and shown |
-| Token Optimization | `gpt-4o-mini`, `MAX_TOKENS=1000`, per-call token tracking (`agents/metrics_tracker.py`), session total in the dashboard header |
+| Token Optimization | `gpt-4o-mini` (or Groq's `llama-3.1-8b-instant` fallback), `MAX_TOKENS=1000`/800, per-call token tracking (`agents/metrics_tracker.py`), session total in the dashboard header |
 | Prompt Architecture | Defensive system prompts (`agents/prompt_templates.py`) with explicit "STRICT RULES -- NEVER VIOLATE" sections and a schema-accurate OUTPUT FORMAT |
-| Latency Optimization | Per-agent latency measured and tracked, color-coded (green/yellow/red) in the UI, session average in the header |
+| Latency Optimization | Per-agent latency measured and tracked, color-coded (green/yellow/red) in the UI, session average in the header; optional Groq fallback (`GROQ_API_KEY`) trades GPT-4o-mini for Groq's LPU-hosted `llama-3.1-8b-instant` when no OpenAI key is set -- see "LLM provider" above |
 
 ---
 

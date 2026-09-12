@@ -56,7 +56,7 @@ class SREAgent:
             try:
                 self._studio_agent = studio.create_agent(
                     name=self.name,
-                    provider=f"openai/{env_config['model_config']['model']}",
+                    provider=f"{env_config['model_config']['provider']}/{env_config['model_config']['model']}",
                     role=self.role,
                     goal=self.goal,
                     instructions=self.instructions,

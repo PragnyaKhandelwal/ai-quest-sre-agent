@@ -141,6 +141,19 @@ def run_triage(alerts: List[Alert], incident_id: str) -> Tuple[TriageResult, int
             output_schema=TriageResult,
         )
 
+        # Authoritative override: fingerprint/cluster_id/is_duplicate are
+        # deterministic, stateful facts computed locally via the
+        # process-wide _SEEN_FINGERPRINTS dedup cache. A real LLM has no
+        # visibility into that cache -- it cannot correctly judge
+        # duplication, and could invent a fingerprint that doesn't match
+        # our own bookkeeping. Same defense-in-depth pattern as the
+        # diagnostician's confidence-gate re-check and the remediation
+        # agent's destructive-keyword re-check: never let the model's own
+        # guess override a fact our own code already knows authoritatively.
+        triage.fingerprint = primary.fingerprint
+        triage.cluster_id = primary.cluster_id
+        triage.is_duplicate = is_dup
+
         return triage, meta["total_tokens"], meta["latency_ms"]
 
     except Exception as exc:  # pragma: no cover - last-resort safety net

@@ -21,10 +21,16 @@ jobs:
         run: pip install -r backend/requirements.txt
 
       - name: Install test dependencies
-        run: pip install pytest httpx
+        run: pip install pytest httpx pytest-cov
 
-      - name: Run tests
-        run: pytest backend/tests/ agents/tests/ -v
+      - name: Run tests with coverage
+        run: pytest --cov=agents --cov=backend --cov-report=xml --cov-report=term-missing -v
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
 
   frontend-build:
     runs-on: ubuntu-latest

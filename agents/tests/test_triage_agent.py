@@ -89,6 +89,19 @@ def test_deduplication_same_fingerprint_twice():
     assert second.fingerprint == first.fingerprint
 
 
+def test_triage_different_services_different_clusters():
+    """Two distinct services firing the same alertname must get different
+    fingerprints/cluster ids and neither should be flagged a duplicate of
+    the other -- dedup is scoped per (service, namespace, alertname)."""
+    memleak, _, _ = triage_agent.run_triage(_memory_leak_alerts(), "inc_test_svc_a")
+    baddeploy, _, _ = triage_agent.run_triage(_bad_deploy_alerts(), "inc_test_svc_b")
+
+    assert memleak.fingerprint != baddeploy.fingerprint
+    assert memleak.cluster_id != baddeploy.cluster_id
+    assert memleak.is_duplicate is False
+    assert baddeploy.is_duplicate is False
+
+
 def test_cluster_grouping_by_service_name():
     alerts = [
         Alert(

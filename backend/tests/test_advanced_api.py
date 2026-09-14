@@ -137,3 +137,109 @@ def test_incident_metrics_returns_per_agent_data(client: TestClient):
     for m in body:
         assert m["total_tokens"] > 0
         assert m["latency_ms"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# Block 3/4: persistence-aware list/detail views + new judge-facing routes
+# ---------------------------------------------------------------------------
+def test_list_incidents_uses_persistence_aware_summaries(client: TestClient):
+    created = client.post("/simulate/1").json()
+    incident_id = created["incident_id"]
+    resp = client.get("/incidents")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body, list)
+    assert any(i["incident_id"] == incident_id for i in body)
+
+
+def test_get_incident_view_matches_live_incident(client: TestClient):
+    created = client.post("/simulate/1").json()
+    incident_id = created["incident_id"]
+    resp = client.get(f"/incidents/{incident_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["incident_id"] == incident_id
+
+
+def test_get_incident_view_404_for_unknown_id(client: TestClient):
+    resp = client.get("/incidents/inc_does_not_exist")
+    assert resp.status_code == 404
+
+
+def test_incident_timeline_falls_back_to_trace_or_rca(client: TestClient):
+    created = client.post("/simulate/1").json()
+    incident_id = created["incident_id"]
+    _wait_for_status(client, incident_id, {"RESOLVED", "ERROR"})
+
+    resp = client.get(f"/incidents/{incident_id}/timeline")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["incident_id"] == incident_id
+    assert isinstance(body["timeline"], list)
+    assert body["total_events"] == len(body["timeline"])
+    assert body["total_events"] > 0
+
+
+def test_incident_timeline_404_for_unknown_id(client: TestClient):
+    resp = client.get("/incidents/inc_does_not_exist/timeline")
+    assert resp.status_code == 404
+
+
+def test_incident_evidence_returns_diagnosis_grounding(client: TestClient):
+    created = client.post("/simulate/1").json()
+    incident_id = created["incident_id"]
+    _wait_for_status(client, incident_id, {"RESOLVED", "ERROR"})
+
+    resp = client.get(f"/incidents/{incident_id}/evidence")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["incident_id"] == incident_id
+    assert 0 <= body["confidence"] <= 1
+    assert isinstance(body["evidence"], list)
+    assert isinstance(body["retrieval_scores"], list)
+
+
+def test_incident_evidence_404_for_unknown_id(client: TestClient):
+    resp = client.get("/incidents/inc_does_not_exist/evidence")
+    assert resp.status_code == 404
+
+
+def test_reset_incident_clears_status_and_hitl(client: TestClient):
+    created = client.post("/simulate/1").json()
+    incident_id = created["incident_id"]
+    _wait_for_status(client, incident_id, {"RESOLVED", "ERROR"})
+
+    resp = client.post(f"/incidents/{incident_id}/reset")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["incident_id"] == incident_id
+    assert body["status"] == "reset"
+
+    detail = client.get(f"/incidents/{incident_id}").json()
+    assert detail["status"] == "TRIAGING"
+    assert detail["pending_hitl"] == []
+
+
+def test_reset_incident_404_for_unknown_id(client: TestClient):
+    resp = client.post("/incidents/inc_does_not_exist/reset")
+    assert resp.status_code == 404
+
+
+def test_system_info_returns_snapshot(client: TestClient):
+    resp = client.get("/system/info")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["version"] == "2.0.0"
+    assert body["uptime_seconds"] >= 0
+    assert "agents" in body
+    assert len(body["agents"]) == 4
+    assert isinstance(body["routes"], list)
+    assert any("/incidents" in r for r in body["routes"])
+
+
+def test_security_headers_present_on_every_response(client: TestClient):
+    resp = client.get("/health")
+    assert resp.headers["x-content-type-options"] == "nosniff"
+    assert resp.headers["x-frame-options"] == "DENY"
+    assert resp.headers["x-powered-by"] == "Lyzr-Automata-SRE-Mesh"
+    assert "x-agent-pipeline" in resp.headers

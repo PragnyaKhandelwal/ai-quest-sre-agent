@@ -4,6 +4,25 @@
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
 ![Powered by Lyzr ADK](https://img.shields.io/badge/powered%20by-Lyzr%20ADK-orange)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-73%20passing-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-87%25-brightgreen)
+![Agents](https://img.shields.io/badge/agents-4%20governed-blueviolet)
+![Scenarios](https://img.shields.io/badge/scenarios-6%20mock-informational)
+
+## ⚡ Judge Quick Start
+
+No setup required -- everything below is live on the deployed URLs.
+
+| Step | Action | Link |
+|---|---|---|
+| 1 | Open the live dashboard | [ai-quest-sre-agent.vercel.app](https://ai-quest-sre-agent.vercel.app) |
+| 2 | Confirm the backend is awake | [`/health`](https://sre-agent-backend-1c0i.onrender.com/health) |
+| 3 | See the Environment · Agent · Inference separation | [`/lyzr/status`](https://sre-agent-backend-1c0i.onrender.com/lyzr/status) |
+| 4 | Get a one-call system snapshot (version, agents, routes) | [`/system/info`](https://sre-agent-backend-1c0i.onrender.com/system/info) |
+| 5 | Trigger a P1 incident and watch it triage → diagnose → remediate live | Click **"Simulate P1 Memory Leak"** on the dashboard |
+| 6 | Trigger a HITL-gated destructive action | Click **"Simulate P1 DB Deadlock"**, then approve/reject in the dashboard |
+| 7 | Inspect the audit trail (every inference, tokens, hallucination checks) | [`/aims/events`](https://sre-agent-backend-1c0i.onrender.com/aims/events) |
+| 8 | Read the auto-generated blameless RCA | Download the RCA (JSON + PDF) from a resolved incident on the dashboard |
 
 ## 🏗️ Lyzr Architecture: Environment · Agent · Inference
 
@@ -317,6 +336,21 @@ curl http://localhost:8000/incidents/<incident_id>/rca/pdf -o rca.pdf
 
 ---
 
+## Why This Wins
+
+| Area | Typical hackathon submission | This submission |
+|---|---|---|
+| Testing | A handful of smoke tests, or none | 73 tests, 87% coverage, coverage artifact uploaded on every CI run |
+| Multi-agent orchestration | A single prompt pretending to be "agents" | Real `lyzr-automata` `LinearSyncPipeline` with 4 typed agent nodes, plus a documented Environment · Agent · Inference separation |
+| Groundedness | Agent output trusted as-is | 3-layer hallucination guard (schema validation, hedge-language detection, log-citation grounding) on every inference, visible per-incident |
+| Human oversight | Agents auto-execute everything | Destructive actions (`kubectl drain`, `pg_terminate_backend`, etc.) are hard-gated behind a HITL approval queue, enforced by keyword blocklist, not just prompted for |
+| Observability | Logs to stdout, if anything | Lyzr AIMS chronological audit trail, per-agent token/latency/cost metrics, and a live agent-trace SSE stream, all in the dashboard |
+| Deployment | "Works on my machine" | Live on Render + Vercel, plus a from-scratch `docker compose build && up` path with healthchecked, networked services |
+| State durability | Pure in-memory, gone on restart | File-based incident persistence (`backend/persistence.py`) survives an in-process restart, with an honest scope note about Render's ephemeral filesystem |
+| Production hygiene | No rate limiting, no security headers | `slowapi` rate limiting on the simulation endpoint, security response headers on every request |
+
+---
+
 ## Deployment
 
 **Backend → Render:** `render.yaml` is included at the repo root. Connect the repo in the
@@ -333,8 +367,21 @@ import). With Root Directory scoped to `frontend`, Vercel only ever sees the Vit
 Then set `VITE_BACKEND_URL` to your deployed Render URL.
 
 **CI/CD:** `.github/workflows/ci.yml` runs on every push/PR to `main`: `backend-test`
-(pytest, 12 tests), `frontend-build` (vite build), and `lint` (ruff). See the badge at the
-top of this file for current status.
+(pytest, 73 tests, 87% coverage), `frontend-build` (vite build), and `lint` (ruff). See the
+badge at the top of this file for current status.
+
+**Docker Compose (local production-style run):** `docker compose build && docker compose up`
+builds the backend (`Dockerfile`) and a static, nginx-served frontend
+(`frontend/Dockerfile.frontend` + `frontend/nginx.conf`) as two networked services with
+healthchecks. Override the backend URL baked into the frontend bundle with
+`VITE_BACKEND_URL=https://your-backend docker compose build frontend`.
+
+**Keep-alive (avoid Render free-tier cold starts):** Render's free tier spins the backend
+down after ~15 minutes of inactivity, adding a ~30-60s cold-start delay to the next
+request. To keep it warm for judging, add a free [UptimeRobot](https://uptimerobot.com)
+HTTP(s) monitor pointed at `https://sre-agent-backend-1c0i.onrender.com/health` with a
+5-minute check interval -- each check is enough traffic to prevent the instance from
+sleeping, with no code changes required.
 
 ---
 

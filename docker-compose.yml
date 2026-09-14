@@ -9,23 +9,43 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    volumes:
-      - ./agents:/app/agents
-      - ./backend:/app/backend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sre-agent-net
 
   frontend:
-    image: node:20-alpine
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+      args:
+        # Vite bakes this into the JS bundle at build time (see
+        # frontend/Dockerfile.frontend) -- override with
+        # `docker compose build --build-arg VITE_BACKEND_URL=...` for a
+        # non-localhost backend.
+        VITE_BACKEND_URL: ${VITE_BACKEND_URL:-http://localhost:8000}
+    image: sre-agent-frontend:latest
     container_name: sre-agent-frontend
-    working_dir: /app
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     ports:
-      - "5173:5173"
-    environment:
-      - VITE_BACKEND_URL=http://localhost:8000
-    env_file:
-      - .env
-    volumes:
-      - ./frontend:/app
+      - "5173:80"
+    restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - sre-agent-net
+
+networks:
+  sre-agent-net:
+    driver: bridge

@@ -27,6 +27,7 @@ from agents.schemas import (
     TriageResult,
 )
 from backend.aims_logger import log_event as aims_log_event
+from backend.persistence import load_all_incidents, save_incident
 
 
 @dataclass
@@ -105,14 +106,39 @@ class IncidentState:
 INCIDENTS: Dict[str, IncidentState] = {}
 TOTAL_TOKENS_USED = {"count": 0}
 
+# Populated once at startup by restore_persisted_incidents() (called from
+# backend/main.py's startup event). Holds read-only historical records for
+# incidents that existed in a previous process (backend/persistence.py) --
+# already in to_public_dict() shape, but NOT live IncidentState objects:
+# an in-process restart loses the asyncio.Event/Queue state a live incident
+# needs for HITL actions or further pipeline progress, so a restored
+# incident is viewable but not resumable or actionable.
+RESTORED_INCIDENTS: Dict[str, dict] = {}
+
 # Global subscriber queues for the incident-list SSE feed (AlertStream panel)
 _GLOBAL_SUBSCRIBERS: List["asyncio.Queue[dict]"] = []
+
+
+def _persist(incident: IncidentState) -> None:
+    """Best-effort disk snapshot of one incident's public view -- never
+    raises (backend/persistence.py already swallows its own I/O errors)."""
+    save_incident(incident.incident_id, incident.to_public_dict())
+
+
+def restore_persisted_incidents() -> int:
+    """Load any incidents persisted by a previous process into
+    RESTORED_INCIDENTS. Called once at FastAPI startup. Returns the count
+    restored, for the startup log line."""
+    restored = load_all_incidents()
+    RESTORED_INCIDENTS.update(restored)
+    return len(restored)
 
 
 def create_incident(incident_id: str, alerts: List[Alert], log_corpus: List[str], scenario: Optional[str] = None) -> IncidentState:
     incident = IncidentState(incident_id=incident_id, alerts=alerts, log_corpus=log_corpus, scenario=scenario)
     INCIDENTS[incident_id] = incident
     _broadcast_global({"type": "incident_created", "incident": incident.summary_dict()})
+    _persist(incident)
     return incident
 
 
@@ -120,8 +146,42 @@ def get_incident(incident_id: str) -> Optional[IncidentState]:
     return INCIDENTS.get(incident_id)
 
 
+def get_incident_view(incident_id: str) -> Optional[dict]:
+    """JSON-safe incident view regardless of whether it's live or was
+    restored from a previous process's persisted state."""
+    incident = INCIDENTS.get(incident_id)
+    if incident:
+        return incident.to_public_dict()
+    return RESTORED_INCIDENTS.get(incident_id)
+
+
 def list_incidents() -> List[IncidentState]:
     return sorted(INCIDENTS.values(), key=lambda i: i.created_at, reverse=True)
+
+
+def list_incident_summaries() -> List[dict]:
+    """Summaries for GET /incidents: live incidents first (newest first),
+    then restored-but-not-live ones so a prior process's completed
+    incidents remain visible after a restart."""
+    live = [i.summary_dict() for i in list_incidents()]
+    live_ids = {i.incident_id for i in INCIDENTS.values()}
+    restored = [
+        {
+            "incident_id": data.get("incident_id", incident_id),
+            "status": data.get("status", "RESOLVED"),
+            "severity": (data.get("triage") or {}).get("severity", "P4"),
+            "service": ((data.get("triage") or {}).get("affected_services") or ["unknown"])[0],
+            "scenario": data.get("scenario"),
+            "title": (data.get("alerts") or [{}])[0].get("title", ""),
+            "created_at": data.get("created_at", 0),
+            "updated_at": data.get("updated_at", 0),
+            "has_pending_hitl": False,
+            "restored": True,
+        }
+        for incident_id, data in RESTORED_INCIDENTS.items()
+        if incident_id not in live_ids
+    ]
+    return live + sorted(restored, key=lambda i: i["created_at"], reverse=True)
 
 
 def list_pending_hitl() -> List[dict]:
@@ -179,6 +239,7 @@ class StoreHooks:
         incident.status = status
         incident.updated_at = time.time()
         _broadcast_global({"type": "status_update", "incident": incident.summary_dict()})
+        _persist(incident)
 
     def on_trace(self, step: AgentTraceStep) -> None:
         incident = INCIDENTS.get(step.incident_id)
@@ -189,6 +250,7 @@ class StoreHooks:
         for q in list(incident._subscribers):
             q.put_nowait(step)
         _broadcast_global({"type": "trace", "incident_id": step.incident_id, "step": step.model_dump()})
+        _persist(incident)
 
     def log_aims(self, event) -> None:
         aims_log_event(event)
@@ -203,6 +265,7 @@ class StoreHooks:
         setattr(incident, key, value)
         incident.updated_at = time.time()
         _broadcast_global({"type": "status_update", "incident": incident.summary_dict()})
+        _persist(incident)
 
     def add_hallucination_report(self, incident_id: str, report: dict) -> None:
         incident = INCIDENTS.get(incident_id)

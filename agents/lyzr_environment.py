@@ -21,7 +21,10 @@ from agents import config
 
 logger = logging.getLogger(__name__)
 
-LYZR_API_KEY = os.getenv("LYZR_API_KEY", "")
+# Resolved once via agents/config.py's secrets.get("LYZR_API_KEY") (Vault ->
+# cloud secrets -> env vars -> .env) -- reused here rather than a second,
+# independent os.getenv() so there's a single source of truth for this key.
+LYZR_API_KEY = config.LYZR_API_KEY
 LYZR_BASE_URL = "https://agent.api.lyzr.ai/v2"
 
 # -- Lyzr Agent Studio SDK ----------------------------------------------------

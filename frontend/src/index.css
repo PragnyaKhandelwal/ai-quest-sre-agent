@@ -38,3 +38,24 @@ body {
 .pulse-dot {
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
+
+/* Light/dark chrome toggle (App.jsx's theme state, persisted to
+   localStorage). Scoped deliberately to just the outer page background and
+   header bar (`.app-shell` / `.app-header`) -- the dense data panels
+   (alert stream, agent trace, HITL queue) keep their dark "mission
+   control" styling in both modes by design, the same way ops dashboards
+   like Grafana/Datadog keep console-style panels dark inside an otherwise
+   light theme. Uses !important to win over the equivalent Tailwind
+   utility classes (bg-base/bg-panel/text-gray-100) already applied inline. */
+[data-theme="light"] .app-shell {
+  background-color: #f4f6fb !important;
+  color: #0f1424 !important;
+}
+[data-theme="light"] .app-header {
+  background-color: #ffffff !important;
+  color: #0f1424 !important;
+  border-color: #d7dce6 !important;
+}
+[data-theme="light"] .app-header .text-gray-400 {
+  color: #4b5563 !important;
+}

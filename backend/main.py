@@ -16,7 +16,7 @@ import time
 import uuid
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
@@ -32,11 +32,22 @@ from agents.tools import call_tool, describe_tools
 from backend import store
 from backend.aims_logger import log_event as aims_log_event
 from backend.aims_logger import recent_events, total_tokens_used
+from backend.exceptions import (
+    AgentPipelineError,
+    HITLActionNotFoundError,
+    HITLAlreadyDecidedError,
+    IncidentNotFoundError,
+    InvalidScenarioError,
+    SREAgentException,
+    ToolNotFoundError,
+)
+from backend.logging_config import setup_logging
 from backend.mock_generator import get_scenario, list_scenarios
 from backend.rca_pdf import render_rca_pdf
+from backend.secrets import secrets
 from backend.store import StoreHooks
 
-logging.basicConfig(level=logging.INFO)
+setup_logging()
 logger = logging.getLogger("sre_agent.backend")
 
 # lyzr_automata (agents/automata_pipeline.py) logs its own task output via
@@ -77,17 +88,92 @@ app.add_middleware(
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-_SIMULATE_RATE_LIMIT = "1000/minute" if "PYTEST_CURRENT_TEST" in os.environ else "10/minute"
+
+
+def _simulate_rate_limit() -> str:
+    """Evaluated per-request (slowapi accepts a callable here), not once at
+    import time: PYTEST_CURRENT_TEST is only set by pytest once a test
+    actually starts *running*, not during collection -- and collection is
+    when this module gets imported (another test file's top-level `from
+    backend.main import app`), so a plain module-level constant would have
+    frozen in the pre-test-run value of this check and permanently missed
+    the pytest bypass for the rest of the session."""
+    return "1000/minute" if "PYTEST_CURRENT_TEST" in os.environ else "10/minute"
+
+
+@app.exception_handler(SREAgentException)
+async def sre_exception_handler(request: Request, exc: SREAgentException) -> JSONResponse:
+    """Specific, informative error responses for every SREAgentException
+    subclass (backend/exceptions.py) -- replaces a single catch-all 500 with
+    a stable machine-readable error_code plus structured detail per error
+    type (Dr Agent's "granular error handling" recommendation)."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.error_code,
+            "message": exc.message,
+            "detail": exc.detail,
+            "docs": "https://sre-agent-backend-1c0i.onrender.com/docs",
+        },
+    )
+
+
+def _internal_error_body(hint: str = "Check GET /aims/events for recent agent activity") -> dict:
+    return {
+        "error": "INTERNAL_SERVER_ERROR",
+        "message": "An unexpected error occurred",
+        "hint": hint,
+    }
+
+
+@app.exception_handler(500)
+async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Handles an explicitly-raised HTTPException(status_code=500, ...)
+    (none currently raised in this codebase, but kept as a safety net for
+    future code) -- distinct from the bare `Exception` handler below, which
+    catches genuinely uncaught errors."""
+    logger.error("HTTP 500 on %s %s", request.method, request.url.path, exc_info=True)
+    return JSONResponse(status_code=500, content=_internal_error_body())
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Catch-all safety net: log every uncaught exception with a full
     traceback so nothing fails silently, and never leak internals to the
-    client -- everything expected (404/409/422/503) is raised explicitly as
-    HTTPException elsewhere and never reaches this handler."""
+    client -- everything expected (404/409/422/503) is raised explicitly via
+    a SREAgentException subclass elsewhere and never reaches this handler."""
     logger.error("Unhandled exception on %s %s", request.method, request.url.path, exc_info=True)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    return JSONResponse(status_code=500, content=_internal_error_body())
+
+
+@app.exception_handler(404)
+async def not_found_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    """Fallback for a URL that doesn't match any route at all (FastAPI's own
+    routing 404) -- app-level "not found" cases (bad incident_id, etc.) are
+    raised as IncidentNotFoundError/HITLActionNotFoundError/ToolNotFoundError
+    and handled by sre_exception_handler above instead, with richer detail."""
+    detail = getattr(exc, "detail", None)
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "NOT_FOUND",
+            "message": detail if isinstance(detail, str) and detail and detail != "Not Found" else "The requested resource does not exist",
+            "path": str(request.url),
+            "hint": "Check GET /incidents for valid incident IDs, or GET /system/info for the full route list",
+        },
+    )
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """Per-request trace ID, echoed back as X-Request-ID -- correlates a
+    client-reported issue with the matching structured JSON log lines and
+    Lyzr AIMS audit events for that request."""
+    request_id = str(uuid.uuid4())[:8]
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
 
 
 @app.middleware("http")
@@ -135,9 +221,38 @@ async def _launch_pipeline(incident_id: str, alerts: List[Alert], log_corpus: Li
 
 
 # ---------------------------------------------------------------------------
+# API versioning (Dr Agent: "add API versioning")
+#
+# Every route below is registered on this router, then mounted twice at the
+# bottom of this file: once at the root (unversioned, for backward
+# compatibility with the existing frontend/docs/judges' bookmarked URLs) and
+# once under /api/v1 (the versioned path new integrations should use). Both
+# paths dispatch to the exact same handler -- there is no duplicated logic.
+# ---------------------------------------------------------------------------
+api_router = APIRouter()
+
+
+@app.get("/")
+async def root():
+    """Unversioned landing endpoint -- not duplicated under /api/v1 since a
+    version-specific root has no real meaning here."""
+    return {
+        "name": "SRE Governed Multi-Agent Incident Response",
+        "version": app.version,
+        "api_versions": ["v1"],
+        "docs": "/docs",
+        "health": "/health",
+        "lyzr_status": "/lyzr/status",
+        "system_info": "/system/info",
+        "frontend": "https://ai-quest-sre-agent.vercel.app",
+        "powered_by": "Lyzr Automata + Groq",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Health & meta
 # ---------------------------------------------------------------------------
-@app.get("/health")
+@api_router.get("/health")
 def health():
     return {
         "status": "ok",
@@ -149,7 +264,7 @@ def health():
     }
 
 
-@app.get("/lyzr/status")
+@api_router.get("/lyzr/status")
 async def lyzr_status():
     """
     Shows the Lyzr Agent Studio Environment · Agent · Inference status.
@@ -205,7 +320,7 @@ async def lyzr_status():
 _PROCESS_START_TIME = time.time()
 
 
-@app.get("/system/info")
+@api_router.get("/system/info")
 def system_info():
     """Single-call system snapshot for judges/reviewers: version, uptime,
     architecture, and a live route list, so the API is self-documenting
@@ -223,7 +338,8 @@ def system_info():
         "llm_provider": sre_environment.config["model_config"]["provider"],
         "incidents_tracked": len(store.INCIDENTS),
         "incidents_persisted": len(store.RESTORED_INCIDENTS),
-        "rate_limit": _SIMULATE_RATE_LIMIT,
+        "rate_limit": _simulate_rate_limit(),
+        "secret_management": secrets.health(),
         "routes": sorted(
             f"{','.join(r.methods - {'HEAD', 'OPTIONS'})} {r.path}"
             for r in app.routes
@@ -232,12 +348,12 @@ def system_info():
     }
 
 
-@app.get("/scenarios")
+@api_router.get("/scenarios")
 def scenarios():
     return list_scenarios()
 
 
-@app.get("/stats")
+@api_router.get("/stats")
 def stats():
     return {
         "total_tokens_used": total_tokens_used(),
@@ -246,7 +362,7 @@ def stats():
     }
 
 
-@app.get("/metrics")
+@api_router.get("/metrics")
 def metrics():
     """Session-wide token/cost/latency summary (agents/metrics_tracker.py),
     powering the dashboard's MetricsPanel header (Token/Latency Optimization
@@ -265,25 +381,25 @@ def metrics():
     return {**summary, "recent_calls": recent_calls}
 
 
-@app.get("/incidents/{incident_id}/metrics")
+@api_router.get("/incidents/{incident_id}/metrics")
 def incident_metrics(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
     return tracker.get_incident_metrics(incident_id)
 
 
 # ---------------------------------------------------------------------------
 # Tool calling (agents/tools.py)
 # ---------------------------------------------------------------------------
-@app.get("/tools")
+@api_router.get("/tools")
 def list_tools():
     """Tool registry with typed input/output schemas -- judges can see every
     tool an agent can call without needing to import Python classes."""
     return describe_tools()
 
 
-@app.post("/tools/{tool_name}")
+@api_router.post("/tools/{tool_name}")
 def invoke_tool(tool_name: str, input_data: dict):
     """Call a tool directly with a JSON body (for demo/testing). Every call
     is logged to Lyzr AIMS with the tool name in metadata.tool_called, so
@@ -291,8 +407,8 @@ def invoke_tool(tool_name: str, input_data: dict):
     start = time.perf_counter()
     try:
         result = call_tool(tool_name, input_data)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError:
+        raise ToolNotFoundError(tool_name, list(describe_tools().keys()))
     except Exception as exc:
         logger.error("Tool call failed: %s", tool_name, exc_info=True)
         raise HTTPException(status_code=422, detail=f"Invalid input for tool '{tool_name}': {exc}")
@@ -315,13 +431,13 @@ def invoke_tool(tool_name: str, input_data: dict):
 # ---------------------------------------------------------------------------
 # Lyzr AIMS audit trail (chronological command/query/output log)
 # ---------------------------------------------------------------------------
-@app.get("/aims/events")
+@api_router.get("/aims/events")
 def aims_events():
     """Full chronological Lyzr AIMS audit trail across all incidents."""
     return recent_events()
 
 
-@app.get("/aims/events/{incident_id}")
+@api_router.get("/aims/events/{incident_id}")
 def aims_events_for_incident(incident_id: str):
     """Lyzr AIMS audit trail filtered to one incident."""
     return recent_events(incident_id=incident_id)
@@ -330,7 +446,7 @@ def aims_events_for_incident(incident_id: str):
 # ---------------------------------------------------------------------------
 # Alert ingestion
 # ---------------------------------------------------------------------------
-@app.post("/alerts/ingest")
+@api_router.post("/alerts/ingest")
 async def ingest_alerts(payload: IngestPayload):
     if not payload.alerts:
         raise HTTPException(status_code=400, detail="At least one alert is required.")
@@ -339,37 +455,29 @@ async def ingest_alerts(payload: IngestPayload):
     try:
         store.create_incident(incident_id, payload.alerts, log_corpus)
         asyncio.create_task(_launch_pipeline(incident_id, payload.alerts, log_corpus))
-    except Exception:
+    except Exception as exc:
         logger.error("Failed to start pipeline for incident %s", incident_id, exc_info=True)
-        raise HTTPException(
-            status_code=503,
-            detail="Agent pipeline unavailable",
-            headers={"Retry-After": "30"},
-        )
+        raise AgentPipelineError("pipeline_startup", str(exc))
     return {"incident_id": incident_id, "status": "pipeline_started"}
 
 
-@app.post("/simulate/{scenario}")
-@limiter.limit(_SIMULATE_RATE_LIMIT)
+@api_router.post("/simulate/{scenario}")
+@limiter.limit(_simulate_rate_limit)
 async def simulate(request: Request, scenario: int):
     try:
         name, alerts, log_corpus = get_scenario(scenario)
     except ValueError:
-        raise HTTPException(status_code=422, detail="Scenario must be 1-6")
+        raise InvalidScenarioError(scenario)
 
     incident_id = _new_incident_id()
     try:
         store.create_incident(incident_id, alerts, log_corpus, scenario=name)
         asyncio.create_task(_launch_pipeline(incident_id, alerts, log_corpus))
-    except Exception:
+    except Exception as exc:
         logger.error(
             "Failed to start pipeline for incident %s (scenario %s)", incident_id, scenario, exc_info=True
         )
-        raise HTTPException(
-            status_code=503,
-            detail="Agent pipeline unavailable",
-            headers={"Retry-After": "30"},
-        )
+        raise AgentPipelineError("pipeline_startup", str(exc))
     return {"incident_id": incident_id, "scenario": name, "status": "pipeline_started"}
 
 
@@ -390,7 +498,7 @@ async def _process_webhook_alert(alert_dict: dict) -> str:
     return incident_id
 
 
-@app.post("/alerts/webhook")
+@api_router.post("/alerts/webhook")
 async def pagerduty_webhook(payload: dict):
     """
     PagerDuty-compatible webhook endpoint.
@@ -425,7 +533,7 @@ async def pagerduty_webhook(payload: dict):
 # ---------------------------------------------------------------------------
 # Incidents
 # ---------------------------------------------------------------------------
-@app.get("/incidents")
+@api_router.get("/incidents")
 def list_incidents():
     # Includes incidents restored from a prior process (backend/persistence.py)
     # that aren't currently live in memory, so completed incidents remain
@@ -433,11 +541,11 @@ def list_incidents():
     return store.list_incident_summaries()
 
 
-@app.get("/incidents/{incident_id}")
+@api_router.get("/incidents/{incident_id}")
 def get_incident(incident_id: str):
     view = store.get_incident_view(incident_id)
     if not view:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
     return view
 
 
@@ -446,11 +554,11 @@ def _get_incident_or_404(incident_id: str) -> store.IncidentState:
     IncidentState object (not just its JSON view)."""
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
     return incident
 
 
-@app.get("/incidents/{incident_id}/timeline")
+@api_router.get("/incidents/{incident_id}/timeline")
 def get_incident_timeline(incident_id: str):
     """Chronological timeline for the UI's timeline component. Uses the
     final RCA's timeline once available (the richest, human-readable
@@ -472,7 +580,7 @@ def get_incident_timeline(incident_id: str):
     }
 
 
-@app.get("/incidents/{incident_id}/evidence")
+@api_router.get("/incidents/{incident_id}/evidence")
 def get_incident_evidence(incident_id: str):
     """Evidence citations from the diagnostician, for the UI's evidence
     drill-down and for judges checking groundedness directly."""
@@ -486,7 +594,7 @@ def get_incident_evidence(incident_id: str):
     }
 
 
-@app.post("/incidents/{incident_id}/reset")
+@api_router.post("/incidents/{incident_id}/reset")
 def reset_incident(incident_id: str):
     """Reset incident status -- useful for demo and judge testing. This is
     a cosmetic reset (status + pending HITL requests only, matching the
@@ -499,11 +607,11 @@ def reset_incident(incident_id: str):
     return {"incident_id": incident_id, "status": "reset", "message": "Incident reset to TRIAGING"}
 
 
-@app.get("/incidents/{incident_id}/stream")
+@api_router.get("/incidents/{incident_id}/stream")
 async def stream_incident(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
 
     async def event_gen():
         # Replay everything we already have, then live-stream new steps.
@@ -530,7 +638,7 @@ async def stream_incident(incident_id: str):
     return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
-@app.get("/events")
+@api_router.get("/events")
 async def stream_all_events():
     """Global SSE feed powering the live AlertStream panel."""
 
@@ -555,62 +663,62 @@ async def stream_all_events():
 # ---------------------------------------------------------------------------
 # HITL approval gate
 # ---------------------------------------------------------------------------
-@app.get("/hitl/pending")
+@api_router.get("/hitl/pending")
 def hitl_pending():
     return store.list_pending_hitl()
 
 
-@app.post("/hitl/{incident_id}/approve")
+@api_router.post("/hitl/{incident_id}/approve")
 def hitl_approve(incident_id: str, payload: HITLDecisionPayload):
     try:
         req = store.resolve_hitl(
             incident_id, payload.request_id, approve=True, decided_by=payload.decided_by, note=payload.note
         )
-    except store.HITLNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except store.HITLAlreadyDecidedError:
-        raise HTTPException(status_code=409, detail="Action already resolved")
+    except store.HITLNotFoundError:
+        raise HITLActionNotFoundError(incident_id)
+    except store.HITLAlreadyDecidedError as exc:
+        raise HITLAlreadyDecidedError(incident_id, exc.request.status.value)
     return {"request_id": req.request_id, "status": req.status.value}
 
 
-@app.post("/hitl/{incident_id}/reject")
+@api_router.post("/hitl/{incident_id}/reject")
 def hitl_reject(incident_id: str, payload: HITLDecisionPayload):
     try:
         req = store.resolve_hitl(
             incident_id, payload.request_id, approve=False, decided_by=payload.decided_by, note=payload.note
         )
-    except store.HITLNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-    except store.HITLAlreadyDecidedError:
-        raise HTTPException(status_code=409, detail="Action already resolved")
+    except store.HITLNotFoundError:
+        raise HITLActionNotFoundError(incident_id)
+    except store.HITLAlreadyDecidedError as exc:
+        raise HITLAlreadyDecidedError(incident_id, exc.request.status.value)
     return {"request_id": req.request_id, "status": req.status.value}
 
 
 # ---------------------------------------------------------------------------
 # RCA export
 # ---------------------------------------------------------------------------
-@app.get("/incidents/{incident_id}/rca")
+@api_router.get("/incidents/{incident_id}/rca")
 def get_rca(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
     if not incident.rca:
         raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
     return incident.rca.model_dump()
 
 
-@app.get("/incidents/{incident_id}/rca/pdf")
+@api_router.get("/incidents/{incident_id}/rca/pdf")
 def get_rca_pdf(incident_id: str):
     incident = store.get_incident(incident_id)
     if not incident:
-        raise HTTPException(status_code=404, detail=f"Incident {incident_id} not found")
+        raise IncidentNotFoundError(incident_id)
     if not incident.rca:
         raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
     try:
         pdf_bytes = render_rca_pdf(incident.rca)
-    except Exception:
+    except Exception as exc:
         logger.error("Failed to render RCA PDF for incident %s", incident_id, exc_info=True)
-        raise HTTPException(status_code=503, detail="Agent pipeline unavailable", headers={"Retry-After": "30"})
+        raise AgentPipelineError("rca_pdf_renderer", str(exc))
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
@@ -621,6 +729,15 @@ def get_rca_pdf(incident_id: str):
 # ---------------------------------------------------------------------------
 # Audit trail
 # ---------------------------------------------------------------------------
-@app.get("/incidents/{incident_id}/audit")
+@api_router.get("/incidents/{incident_id}/audit")
 def get_audit_trail(incident_id: str):
     return recent_events(incident_id=incident_id)
+
+
+# ---------------------------------------------------------------------------
+# Mount api_router twice: unversioned (backward-compatible) and under
+# /api/v1 (the path new integrations should use going forward). Both mounts
+# dispatch to the exact same handler functions defined above.
+# ---------------------------------------------------------------------------
+app.include_router(api_router)
+app.include_router(api_router, prefix="/api/v1")

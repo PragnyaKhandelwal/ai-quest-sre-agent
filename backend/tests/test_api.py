@@ -58,7 +58,9 @@ def test_simulate_creates_incident_and_returns_incident_id(client: TestClient):
 def test_simulate_invalid_scenario_returns_422(client: TestClient):
     resp = client.post("/simulate/99")
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "Scenario must be 1-6"
+    body = resp.json()
+    assert body["error"] == "INVALID_SCENARIO"
+    assert body["detail"]["provided"] == 99
 
 
 def test_get_incident_returns_correct_structure(client: TestClient):
@@ -77,7 +79,9 @@ def test_get_incident_returns_correct_structure(client: TestClient):
 def test_get_incident_missing_returns_404(client: TestClient):
     resp = client.get("/incidents/inc_does_not_exist")
     assert resp.status_code == 404
-    assert resp.json()["detail"] == "Incident inc_does_not_exist not found"
+    body = resp.json()
+    assert body["error"] == "INCIDENT_NOT_FOUND"
+    assert body["detail"]["incident_id"] == "inc_does_not_exist"
 
 
 def test_hitl_approve_changes_status(client: TestClient):
@@ -107,7 +111,9 @@ def test_hitl_approve_changes_status(client: TestClient):
         json={"request_id": request_id, "decided_by": "test-suite"},
     )
     assert conflict_resp.status_code == 409
-    assert conflict_resp.json()["detail"] == "Action already resolved"
+    conflict_body = conflict_resp.json()
+    assert conflict_body["error"] == "HITL_ALREADY_DECIDED"
+    assert conflict_body["detail"]["decision"] == "APPROVED"
 
     final = _wait_for_status(client, incident_id, {"RESOLVED", "ERROR"})
     assert final["status"] == "RESOLVED"

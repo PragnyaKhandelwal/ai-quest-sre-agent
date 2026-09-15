@@ -38,3 +38,11 @@ pytest-cov==6.0.0
 # incident-state persistence to disk (backend/persistence.py).
 slowapi==0.1.10
 aiofiles==23.2.1
+
+# HashiCorp Vault client for backend/secrets.py's layered secret resolution
+# (Vault -> cloud secrets -> env vars -> .env). Inert unless VAULT_ADDR is set.
+hvac==2.3.0
+
+# Structured JSON logging (backend/logging_config.py) -- machine-parseable
+# log lines compatible with Datadog/CloudWatch/Grafana Loki/ELK.
+python-json-logger==2.0.7

@@ -1,3 +1,13 @@
+import { useState } from "react";
+
+const SkeletonCard = () => (
+  <div className="animate-pulse border-b border-border px-4 py-3">
+    <div className="h-3 bg-gray-700 rounded w-1/4 mb-2"></div>
+    <div className="h-4 bg-gray-700 rounded w-3/4 mb-1"></div>
+    <div className="h-3 bg-gray-700 rounded w-1/2"></div>
+  </div>
+);
+
 const SEVERITY_STYLES = {
   P1: "bg-danger/15 text-danger border-danger/40",
   P2: "bg-warn/15 text-warn border-warn/40",
@@ -22,7 +32,19 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export default function AlertStream({ incidents, selectedId, onSelect }) {
+export default function AlertStream({ incidents, loading, selectedId, onSelect }) {
+  const [filter, setFilter] = useState("");
+  const filteredIncidents = incidents.filter((i) => {
+    const needle = filter.toLowerCase();
+    return (
+      !needle ||
+      i.service?.toLowerCase().includes(needle) ||
+      i.severity?.toLowerCase().includes(needle) ||
+      i.status?.toLowerCase().includes(needle) ||
+      i.title?.toLowerCase().includes(needle)
+    );
+  });
+
   return (
     <div className="flex flex-col h-full bg-panel border-r border-border">
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
@@ -31,13 +53,31 @@ export default function AlertStream({ incidents, selectedId, onSelect }) {
         </h2>
         <span className="text-xs text-gray-500">{incidents.length} incident(s)</span>
       </div>
+      <div className="px-3 py-2 border-b border-border">
+        <input
+          type="text"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="Filter by service, severity, or status..."
+          className="w-full bg-black/30 border border-border rounded px-2.5 py-1.5 text-xs text-gray-200 placeholder-gray-600 focus:outline-none focus:border-cyan"
+        />
+      </div>
       <div className="flex-1 overflow-y-auto divide-y divide-border">
-        {incidents.length === 0 && (
+        {loading && (
+          <>
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </>
+        )}
+        {!loading && filteredIncidents.length === 0 && (
           <div className="p-6 text-center text-gray-500 text-sm">
-            No incidents yet. Trigger a simulation above ⬆
+            {incidents.length === 0
+              ? "No incidents yet. Trigger a simulation above ⬆"
+              : "No incidents match your filter."}
           </div>
         )}
-        {incidents.map((inc) => (
+        {!loading && filteredIncidents.map((inc) => (
           <button
             key={inc.incident_id}
             onClick={() => onSelect(inc.incident_id)}

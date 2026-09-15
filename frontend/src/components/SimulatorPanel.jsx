@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { simulateScenario } from "../api";
 
 const SCENARIOS = [
@@ -10,7 +10,7 @@ const SCENARIOS = [
   { id: 6, label: "Simulate P3 Cert Expiry", emoji: "🟡", color: "border-yellow-500 text-yellow-400 hover:bg-yellow-500/10" },
 ];
 
-export default function SimulatorPanel({ onTriggered, children }) {
+export default function SimulatorPanel({ onTriggered, exposeTrigger, children }) {
   const [loadingId, setLoadingId] = useState(null);
   const [lastError, setLastError] = useState(null);
 
@@ -26,6 +26,13 @@ export default function SimulatorPanel({ onTriggered, children }) {
       setLoadingId(null);
     }
   }
+
+  // Lets App.jsx's global keyboard-shortcut handler (Ctrl+1..4) call this
+  // component's own trigger() without lifting scenario state up a level.
+  useEffect(() => {
+    exposeTrigger?.(trigger);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-panel border-b border-border">
@@ -47,6 +54,9 @@ export default function SimulatorPanel({ onTriggered, children }) {
       {lastError && (
         <span className="text-danger text-xs ml-2">Error: {lastError}</span>
       )}
+      <span className="text-[10px] text-gray-600 w-full basis-full">
+        Shortcuts: Ctrl+1/2/3/4 to trigger scenarios · Ctrl+K to clear selection
+      </span>
       {children && <div className="ml-auto flex items-center gap-2">{children}</div>}
     </div>
   );

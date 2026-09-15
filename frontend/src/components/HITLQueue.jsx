@@ -57,9 +57,18 @@ export default function HITLQueue({ pending, onApprove, onReject, busyId }) {
             >
               risk: {request.action.risk_level}
             </div>
-            <pre className="mt-2 bg-black/40 border border-border rounded px-2 py-1.5 text-[11px] font-mono-log text-cyan overflow-x-auto whitespace-pre-wrap break-all">
-              {request.action.command}
-            </pre>
+            <div className="mt-2 flex items-start gap-1">
+              <pre className="flex-1 bg-black/40 border border-border rounded px-2 py-1.5 text-[11px] font-mono-log text-cyan overflow-x-auto whitespace-pre-wrap break-all">
+                {request.action.command}
+              </pre>
+              <button
+                onClick={() => navigator.clipboard?.writeText(request.action.command)}
+                title="Copy command to clipboard"
+                className="text-xs text-gray-400 hover:text-cyan-300 px-1.5 py-1"
+              >
+                📋
+              </button>
+            </div>
             <p className="text-[11px] text-gray-500 mt-1">{request.action.reason}</p>
             <div className="flex gap-2 mt-2.5">
               <button

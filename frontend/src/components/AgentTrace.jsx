@@ -127,6 +127,12 @@ function TraceStep({ step, hallucinationReport }) {
   );
 }
 
+function shareIncident(incidentId) {
+  const url = `${window.location.origin}${window.location.pathname}?incident=${incidentId}`;
+  navigator.clipboard?.writeText(url);
+  alert("Incident URL copied to clipboard!");
+}
+
 export default function AgentTrace({ incident }) {
   const [view, setView] = useState("trace"); // "trace" | "graph"
 
@@ -147,6 +153,13 @@ export default function AgentTrace({ incident }) {
           </h2>
           <div className="text-xs text-gray-500 mt-0.5 font-mono-log">{incident.incident_id}</div>
         </div>
+        <button
+          onClick={() => shareIncident(incident.incident_id)}
+          title="Copy a shareable link to this incident"
+          className="text-[11px] text-gray-400 hover:text-cyan-300 border border-border rounded px-2 py-1 mr-2"
+        >
+          🔗 Share
+        </button>
         <div className="flex rounded-md border border-border overflow-hidden text-[11px] font-semibold">
           <button
             onClick={() => setView("trace")}

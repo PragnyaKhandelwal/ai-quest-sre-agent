@@ -6,7 +6,11 @@ async function handle(res) {
     let detail = res.statusText;
     try {
       const body = await res.json();
-      detail = body.detail || detail;
+      // backend/exceptions.py's error responses carry a human-readable
+      // `message` plus a structured `detail` object (not a string) -- prefer
+      // `message`, and only fall back to a string-typed `detail` for the
+      // few endpoints that still raise a plain FastAPI HTTPException.
+      detail = body.message || (typeof body.detail === "string" ? body.detail : detail);
     } catch {
       /* ignore */
     }

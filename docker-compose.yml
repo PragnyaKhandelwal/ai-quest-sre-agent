@@ -38,7 +38,11 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      # 127.0.0.1, not localhost: this alpine/busybox wget resolves
+      # "localhost" to ::1 first and gets refused there even though nginx
+      # is correctly listening on 0.0.0.0:80 -- confirmed by hand inside the
+      # container (wget http://localhost/health failed, 127.0.0.1 worked).
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 30s
       timeout: 5s
       retries: 3

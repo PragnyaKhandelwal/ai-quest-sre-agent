@@ -20,14 +20,20 @@ try:
 except ImportError:  # pragma: no cover - dotenv is optional
     pass
 
+# backend.secrets.secrets is a layered resolver (HashiCorp Vault -> cloud
+# provider secrets -> environment variables -> .env, loaded above) that
+# replaces direct os.getenv() calls for actual credentials -- everything
+# else below (URLs, thresholds) is non-secret config and stays on os.getenv.
+from backend.secrets import secrets
+
 # ---------------------------------------------------------------------------
 # Lyzr platform configuration
 # ---------------------------------------------------------------------------
-LYZR_API_KEY = os.getenv("LYZR_API_KEY", "")
+LYZR_API_KEY = secrets.get("LYZR_API_KEY", "")
 LYZR_BASE_URL = os.getenv("LYZR_BASE_URL", "https://agent.api.lyzr.ai/v2")
 LYZR_AIMS_URL = os.getenv("LYZR_AIMS_URL", "https://aims.api.lyzr.ai/v1")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+OPENAI_API_KEY = secrets.get("OPENAI_API_KEY", "")
+GROQ_API_KEY = secrets.get("GROQ_API_KEY", "")
 
 # If no Lyzr key is configured, the system runs fully in "local simulation"
 # mode: every agent falls back to deterministic, schema-validated local

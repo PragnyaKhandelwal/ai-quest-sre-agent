@@ -138,8 +138,16 @@ export default function AgentTrace({ incident }) {
 
   if (!incident) {
     return (
-      <div className="flex items-center justify-center h-full text-gray-500 text-sm bg-base">
-        Select an incident from the alert stream to view the agent reasoning trace.
+      <div className="flex flex-col h-full bg-base">
+        <div className="px-4 py-3 border-b border-border">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-300">
+            Agent Reasoning Trace
+          </h2>
+        </div>
+        <div className="flex-1 flex flex-col items-center justify-center text-gray-500 text-sm px-6 text-center gap-2">
+          <span className="text-2xl opacity-40">🔎</span>
+          Select an incident from the alert stream to view the agent reasoning trace.
+        </div>
       </div>
     );
   }
@@ -156,7 +164,7 @@ export default function AgentTrace({ incident }) {
         <button
           onClick={() => shareIncident(incident.incident_id)}
           title="Copy a shareable link to this incident"
-          className="text-[11px] text-gray-400 hover:text-cyan-300 border border-border rounded px-2 py-1 mr-2"
+          className="text-[11px] text-gray-400 hover:text-cyan border border-border rounded px-2 py-1 mr-2"
         >
           🔗 Share
         </button>

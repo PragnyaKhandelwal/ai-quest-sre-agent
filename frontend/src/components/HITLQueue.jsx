@@ -41,7 +41,8 @@ export default function HITLQueue({ pending, onApprove, onReject, busyId }) {
       </div>
       <div className="flex-1 overflow-y-auto divide-y divide-border">
         {pending.length === 0 && (
-          <div className="p-6 text-center text-gray-500 text-sm">
+          <div className="p-6 text-center text-gray-500 text-sm flex flex-col items-center gap-2">
+            <span className="text-2xl opacity-40">✅</span>
             No destructive actions awaiting approval.
           </div>
         )}
@@ -64,7 +65,7 @@ export default function HITLQueue({ pending, onApprove, onReject, busyId }) {
               <button
                 onClick={() => navigator.clipboard?.writeText(request.action.command)}
                 title="Copy command to clipboard"
-                className="text-xs text-gray-400 hover:text-cyan-300 px-1.5 py-1"
+                className="text-xs text-gray-400 hover:text-cyan px-1.5 py-1"
               >
                 📋
               </button>

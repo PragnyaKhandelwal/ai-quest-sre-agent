@@ -115,11 +115,10 @@ export default function App() {
 
   // Theme toggle -- persisted per-browser; see index.css's
   // [data-theme="light"] rules for the overrides applied to the app chrome
-  // (header + page background). The
-  // dense data panels (alert stream, agent trace, HITL queue) intentionally
-  // keep their dark "mission control" styling in both modes, matching how
-  // ops dashboards like Grafana/Datadog keep console-style panels dark even
-  // inside an otherwise light theme.
+  // (header + page background). The dense data panels (alert stream, agent
+  // trace, HITL queue) intentionally keep their dark "mission control"
+  // styling in both modes, matching how ops dashboards like Grafana/Datadog
+  // keep console-style panels dark even inside an otherwise light theme.
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
     try {
@@ -257,14 +256,14 @@ export default function App() {
           <button
             onClick={() => exportIncidentsCsv(incidents)}
             title="Export all incidents as CSV"
-            className="text-gray-400 hover:text-cyan-300 border border-border rounded px-2 py-1 transition"
+            className="text-gray-400 hover:text-cyan border border-border rounded px-2 py-1 transition"
           >
             📊 Export CSV
           </button>
           <button
             onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
             title="Toggle light/dark chrome"
-            className="text-gray-400 hover:text-cyan-300 border border-border rounded px-2 py-1 transition"
+            className="text-gray-400 hover:text-cyan border border-border rounded px-2 py-1 transition"
           >
             {theme === "dark" ? "🌙" : "☀️"}
           </button>

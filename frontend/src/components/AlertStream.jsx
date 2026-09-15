@@ -71,7 +71,8 @@ export default function AlertStream({ incidents, loading, selectedId, onSelect }
           </>
         )}
         {!loading && filteredIncidents.length === 0 && (
-          <div className="p-6 text-center text-gray-500 text-sm">
+          <div className="p-6 text-center text-gray-500 text-sm flex flex-col items-center gap-2">
+            <span className="text-2xl opacity-40">📡</span>
             {incidents.length === 0
               ? "No incidents yet. Trigger a simulation above ⬆"
               : "No incidents match your filter."}

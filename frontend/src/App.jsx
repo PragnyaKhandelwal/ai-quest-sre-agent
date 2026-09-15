@@ -278,7 +278,10 @@ export default function App() {
         <VoiceBriefing incident={selectedDetail} />
       </SimulatorPanel>
 
-      <div className="px-4 py-2 bg-panel border-b border-border">
+      <div className="mx-4 my-2.5 px-4 py-3 bg-panel border border-border rounded-lg">
+        <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">
+          Session Metrics
+        </div>
         <MetricsPanel selectedIncident={selectedDetail} />
       </div>
 

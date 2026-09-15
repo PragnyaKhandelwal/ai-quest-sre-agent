@@ -35,29 +35,33 @@ export default function SimulatorPanel({ onTriggered, exposeTrigger, children })
   }, []);
 
   return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-3 bg-panel border-b border-border">
-      <span className="text-xs uppercase tracking-wider text-gray-400 font-semibold mr-1">
-        Incident Simulator
-      </span>
-      {SCENARIOS.map((s) => (
-        <button
-          key={s.id}
-          onClick={() => trigger(s.id)}
-          disabled={loadingId !== null}
-          className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${s.color}`}
-        >
-          <span>{s.emoji}</span>
-          <span>{s.label}</span>
-          {loadingId === s.id && <span className="animate-spin">⏳</span>}
-        </button>
-      ))}
-      {lastError && (
-        <span className="text-danger text-xs ml-2">Error: {lastError}</span>
-      )}
-      <span className="text-[10px] text-gray-600 w-full basis-full">
-        Shortcuts: Ctrl+1/2/3/4 to trigger scenarios · Ctrl+K to clear selection
-      </span>
-      {children && <div className="ml-auto flex items-center gap-2">{children}</div>}
+    <div className="flex flex-col gap-2 px-4 py-3 bg-panel border-b border-border">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-xs uppercase tracking-wider text-gray-400 font-semibold mr-1">
+          Incident Simulator
+        </span>
+        {SCENARIOS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => trigger(s.id)}
+            disabled={loadingId !== null}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${s.color}`}
+          >
+            <span>{s.emoji}</span>
+            <span>{s.label}</span>
+            {loadingId === s.id && <span className="animate-spin">⏳</span>}
+          </button>
+        ))}
+        {lastError && (
+          <span className="text-danger text-xs ml-2">Error: {lastError}</span>
+        )}
+      </div>
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <span className="text-[10px] text-gray-600">
+          Shortcuts: Ctrl+1/2/3/4 to trigger scenarios · Ctrl+K to clear selection
+        </span>
+        {children && <div className="flex items-center gap-2">{children}</div>}
+      </div>
     </div>
   );
 }

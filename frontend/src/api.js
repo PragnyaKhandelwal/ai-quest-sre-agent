@@ -35,6 +35,10 @@ export function getIncidentMetrics(id) {
   return fetch(`${BACKEND_URL}/incidents/${id}/metrics`).then(handle);
 }
 
+export function getAnomalyAnalysis(id) {
+  return fetch(`${BACKEND_URL}/incidents/${id}/anomaly-analysis`).then(handle);
+}
+
 export function listIncidents() {
   return fetch(`${BACKEND_URL}/incidents`).then(handle);
 }

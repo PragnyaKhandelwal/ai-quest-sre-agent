@@ -13,15 +13,34 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Tuple
 
 from agents import config
+from agents.anomaly_detector import correlation_graph, detect_alert_burst
 from agents.lyzr_agents import TRIAGE_AGENT
 from agents.lyzr_inference import run_inference
 from agents.schemas import Alert, AlertCluster, Severity, TriageResult
 
+logger = logging.getLogger(__name__)
+
 AGENT_NAME = "TriageAndDedupAgent"
+
+# Alert.severity_hint (backend/mock_generator.py: "critical"/"high"/"medium"/
+# "low") isn't itself a P-level -- map it to one so agents/anomaly_detector.py's
+# correlation_graph() (which ranks alerts by P1..P4) has something to rank on.
+_SEVERITY_HINT_TO_LEVEL = {"critical": "P1", "high": "P2", "medium": "P3", "low": "P4"}
+
+
+def _alert_to_correlation_dict(alert: Alert) -> dict:
+    return {
+        "id": alert.id,
+        "service": alert.service,
+        "namespace": alert.namespace,
+        "severity": _SEVERITY_HINT_TO_LEVEL.get((alert.severity_hint or "").lower(), "P3"),
+    }
 
 # fingerprint -> last_seen_timestamp, used for the 5-minute dedup window
 _SEEN_FINGERPRINTS: Dict[str, float] = {}
@@ -153,6 +172,14 @@ def run_triage(alerts: List[Alert], incident_id: str) -> Tuple[TriageResult, int
         triage.fingerprint = primary.fingerprint
         triage.cluster_id = primary.cluster_id
         triage.is_duplicate = is_dup
+
+        graph = correlation_graph([_alert_to_correlation_dict(a) for a in alerts])
+        timestamps = [datetime.fromtimestamp(a.started_at, tz=timezone.utc).isoformat() for a in alerts]
+        is_burst, _burst_count, burst_analysis = detect_alert_burst(timestamps)
+        triage.correlation_graph = graph
+        triage.burst_detected = is_burst
+        triage.burst_analysis = burst_analysis
+        logger.info(f"Anomaly detection: root_cause={graph.get('root_cause_service')}, burst={is_burst}")
 
         return triage, meta["total_tokens"], meta["latency_ms"]
 

@@ -30,6 +30,8 @@ from agents.lyzr_agents import SREAgent, sre_environment
 from agents.metrics_tracker import estimate_tokens, tracker
 from agents.schemas import AIMSEvent
 from backend.aims_logger import log_event as log_aims_event
+from backend.circuit_breaker import BREAKERS_BY_AGENT_NAME
+from backend.prometheus_metrics import agent_latency, agent_tokens_total
 
 logger = logging.getLogger(__name__)
 
@@ -75,13 +77,29 @@ def run_inference(
         raw_text: Optional[str] = None
 
         # -- Real Lyzr Agent Studio inference ---------------------------------
+        # Routed through a per-agent circuit breaker (backend/circuit_breaker.py):
+        # after 3 failures in a row it OPENs and stops attempting real calls
+        # for 30s (returning the fallback immediately instead), preventing a
+        # struggling LLM API from adding latency to every single incident.
         if agent.is_real and agent.get_studio_agent():
-            try:
-                response = agent.get_studio_agent().run(prompt)
-                raw_text = response.response if hasattr(response, "response") else str(response)
+            studio_agent = agent.get_studio_agent()
+
+            def _call_real_agent(_studio_agent=studio_agent, _prompt=prompt):
+                response = _studio_agent.run(_prompt)
+                return response.response if hasattr(response, "response") else str(response)
+
+            breaker = BREAKERS_BY_AGENT_NAME.get(agent.name)
+            if breaker:
+                raw_text = breaker.call(_call_real_agent, fallback=None)
+            else:
+                try:
+                    raw_text = _call_real_agent()
+                except Exception as e:
+                    logger.error(f"Lyzr Studio inference failed for {agent.name}: {e}", exc_info=True)
+                    raw_text = None
+
+            if raw_text is not None:
                 logger.info(f"Lyzr Studio inference: {agent.name} -> {len(str(raw_text))} chars")
-            except Exception as e:
-                logger.error(f"Lyzr Studio inference failed for {agent.name}: {e}", exc_info=True)
 
         # -- Simulation fallback -----------------------------------------------
         if raw_text is None:
@@ -123,6 +141,10 @@ def run_inference(
             result = None
 
     completed = tracker.end_call(metrics, input_tokens, output_tokens)
+
+    agent_latency.labels(agent_name=agent.name).observe(completed.latency_ms / 1000)
+    agent_tokens_total.labels(agent_name=agent.name, token_type="input").inc(completed.input_tokens)
+    agent_tokens_total.labels(agent_name=agent.name, token_type="output").inc(completed.output_tokens)
 
     inference_meta = {
         "agent_name": agent.name,

@@ -31,6 +31,12 @@ from agents.schemas import (
     TriageResult,
 )
 from backend.aims_logger import log_event as aims_log_event
+from backend.prometheus_metrics import (
+    hitl_decisions_total,
+    incidents_total,
+    pipeline_duration,
+    pipeline_errors_total,
+)
 from backend.redis_store import incident_store as redis_incident_store
 
 
@@ -245,6 +251,12 @@ class StoreHooks:
         _broadcast_global({"type": "status_update", "incident": incident.summary_dict()})
         _persist(incident)
 
+        if status == IncidentStatus.RESOLVED:
+            severity = incident.triage.severity.value if incident.triage else "unknown"
+            pipeline_duration.labels(severity=severity).observe(incident.updated_at - incident.created_at)
+        elif status == IncidentStatus.ERROR:
+            pipeline_errors_total.labels(agent_name="pipeline", error_type="pipeline_error").inc()
+
     def on_trace(self, step: AgentTraceStep) -> None:
         incident = INCIDENTS.get(step.incident_id)
         if not incident:
@@ -270,6 +282,9 @@ class StoreHooks:
         incident.updated_at = time.time()
         _broadcast_global({"type": "status_update", "incident": incident.summary_dict()})
         _persist(incident)
+
+        if key == "triage":
+            incidents_total.labels(severity=value.severity.value, scenario=incident.scenario or "unknown").inc()
 
     def add_hallucination_report(self, incident_id: str, report: dict) -> None:
         incident = INCIDENTS.get(incident_id)
@@ -340,4 +355,7 @@ def resolve_hitl(incident_id: str, request_id: str, approve: bool, decided_by: s
     req.decided_at = time.time()
     req.decided_by = decided_by
     ev.set()
+    hitl_decisions_total.labels(
+        decision=req.status.value.lower(), risk_level=req.action.risk_level.value
+    ).inc()
     return req

@@ -92,6 +92,13 @@ class TriageResult(BaseModel):
     alert_count: int
     is_duplicate: bool = False
     reasoning: str = ""
+    # Populated locally by agents/anomaly_detector.py (never by the LLM --
+    # same "authoritative override" pattern as fingerprint/cluster_id/
+    # is_duplicate above): root-cause-vs-symptom correlation graph and
+    # burst-of-alerts detection across the alert batch.
+    correlation_graph: Optional[Dict[str, Any]] = None
+    burst_detected: bool = False
+    burst_analysis: str = ""
 
 
 # ---------------------------------------------------------------------------

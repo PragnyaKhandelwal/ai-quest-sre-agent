@@ -34,10 +34,8 @@ pytest==8.3.4
 httpx==0.27.2
 pytest-cov==6.0.0
 
-# Rate limiting (backend/main.py: /simulate/{scenario}) and lightweight
-# incident-state persistence to disk (backend/persistence.py).
+# Rate limiting (backend/main.py: /simulate/{scenario}).
 slowapi==0.1.10
-aiofiles==23.2.1
 
 # HashiCorp Vault client for backend/secrets.py's layered secret resolution
 # (Vault -> cloud secrets -> env vars -> .env). Inert unless VAULT_ADDR is set.
@@ -60,3 +58,18 @@ pydantic-settings==2.3.4
 
 # Static security scan, run in CI (.github/workflows/ci.yml: security job).
 bandit==1.9.4
+
+# Deep health check (GET /health: backend/main.py) -- process-level CPU/
+# memory/disk usage, one of its dependency checks.
+psutil==6.0.0
+
+# Prometheus-format metrics (backend/prometheus_metrics.py), scrape-able by
+# Grafana/Datadog/CloudWatch/Victoria Metrics.
+prometheus-client==0.20.0
+
+# Statistical anomaly detection (agents/anomaly_detector.py): z-score via
+# scipy.stats, vectorized mean/stddev via numpy. scikit-learn already pulls
+# numpy in transitively; pinned explicitly here since it's now imported
+# directly, not just relied on as someone else's dependency.
+numpy==1.26.4
+scipy==1.13.1

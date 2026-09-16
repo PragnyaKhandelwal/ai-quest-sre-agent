@@ -206,11 +206,20 @@ class TestFullIncidentLifecycle:
         """
         Integration test: /api/v1/* routes (Dr Agent: "add API versioning")
         dispatch to the exact same handlers as their unversioned aliases.
+        Uses /config rather than /health for the equality check: /health is
+        a deep, point-in-time check (timestamp, latency, live CPU%), so two
+        back-to-back calls to it are expected to differ even when both hit
+        the same handler -- /config is deterministic within a test run.
         """
-        root_resp = client.get("/health")
-        v1_resp = client.get("/api/v1/health")
+        root_resp = client.get("/config")
+        v1_resp = client.get("/api/v1/config")
         assert root_resp.status_code == v1_resp.status_code == 200
         assert root_resp.json() == v1_resp.json()
+
+        health_root = client.get("/health")
+        health_v1 = client.get("/api/v1/health")
+        assert health_root.status_code == health_v1.status_code == 200
+        assert health_root.json().keys() == health_v1.json().keys()
 
     def test_root_endpoint_reports_api_versions(self, client: TestClient):
         r = client.get("/")

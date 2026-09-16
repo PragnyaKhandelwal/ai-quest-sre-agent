@@ -1,4 +1,5 @@
 import { useState } from "react";
+import AnomalyPanel from "./AnomalyPanel";
 import DecisionGraph from "./DecisionGraph";
 
 const AGENT_COLORS = {
@@ -200,7 +201,14 @@ export default function AgentTrace({ incident }) {
             const hallucinationReport = (incident.hallucination_reports || []).find(
               (r) => r.agent === step.agent_name
             );
-            return <TraceStep key={step.step_id} step={step} hallucinationReport={hallucinationReport} />;
+            return (
+              <div key={step.step_id}>
+                <TraceStep step={step} hallucinationReport={hallucinationReport} />
+                {step.agent_name === "RootCauseDiagnosticianAgent" && (
+                  <AnomalyPanel incidentId={incident.incident_id} />
+                )}
+              </div>
+            );
           })}
         </div>
       )}

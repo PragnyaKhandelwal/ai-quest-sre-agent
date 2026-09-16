@@ -42,7 +42,10 @@ def test_health_returns_200(client: TestClient):
     resp = client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "ok"
+    # Deep health check (backend/main.py): "healthy" while everything (Redis,
+    # agents, secrets, LLM, system resources) checks out -- see
+    # test_advanced_api.py for the per-dependency assertions.
+    assert body["status"] in ("healthy", "degraded")
     assert "confidence_threshold" in body
 
 

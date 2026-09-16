@@ -1,21 +1,30 @@
-name: CI
+name: CI — SRE Agent Pipeline
 
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
     branches: [main]
 
-jobs:
-  backend-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "20"
 
-      - name: Set up Python 3.11
+jobs:
+  # -- Job 1: Backend Tests -----------------------------------------------
+  backend-test:
+    name: Backend Tests & Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install backend dependencies
         run: pip install -r backend/requirements.txt
@@ -24,41 +33,124 @@ jobs:
         run: pip install pytest httpx pytest-cov
 
       - name: Run tests with coverage
-        run: pytest --cov=agents --cov=backend --cov-report=xml --cov-report=term-missing -v
+        run: |
+          pytest \
+            --cov=agents \
+            --cov=backend \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=60 \
+            -v
+        env:
+          LYZR_API_KEY: ""
+          OPENAI_API_KEY: ""
+          GROQ_API_KEY: ""
+          ENVIRONMENT: "test"
 
-      - name: Upload coverage report
+      - name: Upload coverage to artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-report
+          name: backend-coverage
           path: coverage.xml
 
-  frontend-build:
+  # -- Job 2: Lint ----------------------------------------------------------
+  lint:
+    name: Lint (ruff)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Node 20
-        uses: actions/setup-node@v4
+      - uses: actions/setup-python@v5
         with:
-          node-version: "20"
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - run: pip install ruff
+      - name: Run ruff linter
+        run: ruff check agents/ backend/ --output-format=github
+
+  # -- Job 3: Frontend Build -------------------------------------------------
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install & build frontend
-        run: cd frontend && npm install && npm run build
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
 
-  lint:
+      - name: Build frontend
+        run: cd frontend && npm run build
+        env:
+          VITE_BACKEND_URL: https://sre-agent-backend-1c0i.onrender.com
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+
+  # -- Job 4: Frontend Tests --------------------------------------------------
+  frontend-test:
+    name: Frontend Tests (Vitest)
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.11"
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci
+      - name: Run Vitest suite
+        run: cd frontend && npm test
 
-      - name: Install ruff
-        run: pip install ruff
+  # -- Job 5: Docker Build ------------------------------------------------------
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
 
-      - name: Run ruff
-        run: ruff check agents/ backend/
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend Docker image
+        run: docker build -t sre-agent-backend:test .
+      - name: Verify image runs
+        run: |
+          docker run -d --name test-backend \
+            -e LYZR_API_KEY="" \
+            -e GROQ_API_KEY="" \
+            -p 8000:8000 \
+            sre-agent-backend:test
+          sleep 5
+          curl -f http://localhost:8000/health || exit 1
+          docker stop test-backend
+
+  # -- Job 6: Security Scan --------------------------------------------------
+  security:
+    name: Security Scan (bandit)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install bandit
+      - name: Run bandit security scan
+        run: |
+          bandit -r agents/ backend/ \
+            -ll \
+            --skip B101,B601 \
+            -f json \
+            -o bandit-report.json || true
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: bandit-report.json

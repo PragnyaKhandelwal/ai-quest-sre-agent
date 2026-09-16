@@ -31,7 +31,7 @@ from agents.schemas import AIMSEvent, Alert, IncidentStatus
 from agents.tools import call_tool, describe_tools
 from backend import store
 from backend.aims_logger import log_event as aims_log_event
-from backend.aims_logger import recent_events, total_tokens_used
+from backend.aims_logger import total_tokens_used
 from backend.exceptions import (
     AgentPipelineError,
     HITLActionNotFoundError,
@@ -44,7 +44,9 @@ from backend.exceptions import (
 from backend.logging_config import setup_logging
 from backend.mock_generator import get_scenario, list_scenarios
 from backend.rca_pdf import render_rca_pdf
+from backend.redis_store import incident_store as redis_incident_store
 from backend.secrets import secrets
+from backend.settings import settings
 from backend.store import StoreHooks
 
 setup_logging()
@@ -72,7 +74,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # demo/hackathon: open CORS so the Vercel-hosted frontend can reach Render
+    # Deliberately "*", not settings.cors_origins_list: Render has no
+    # ENVIRONMENT var set today, so settings.environment defaults to
+    # "development" and would load config/development.env's localhost-only
+    # CORS_ORIGINS, breaking the live Vercel frontend. settings.cors_origins
+    # is still surfaced (read-only) at GET /config for visibility -- wiring
+    # it in for real requires setting ENVIRONMENT=production in Render's
+    # dashboard first.
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -190,11 +199,11 @@ async def add_security_and_identity_headers(request: Request, call_next):
 @app.on_event("startup")
 async def startup_event():
     """Restore any incidents persisted by a previous process
-    (backend/persistence.py) so completed incidents remain viewable across
+    (backend/redis_store.py) so completed incidents remain viewable across
     an in-process restart -- see backend/store.py's RESTORED_INCIDENTS for
     the scope/limits of what "restored" means here."""
     restored_count = store.restore_persisted_incidents()
-    logger.info(f"Backend started. Restored {restored_count} incidents from disk.")
+    logger.info(f"Backend started. Restored {restored_count} incidents from Redis.")
 
 
 # ---------------------------------------------------------------------------
@@ -340,12 +349,22 @@ def system_info():
         "incidents_persisted": len(store.RESTORED_INCIDENTS),
         "rate_limit": _simulate_rate_limit(),
         "secret_management": secrets.health(),
+        "state_management": redis_incident_store.health(),
+        "settings": settings.summary(),
         "routes": sorted(
             f"{','.join(r.methods - {'HEAD', 'OPTIONS'})} {r.path}"
             for r in app.routes
             if hasattr(r, "methods")
         ),
     }
+
+
+@api_router.get("/config")
+def get_config():
+    """Public configuration summary (backend/settings.py) -- shows active
+    settings without exposing secrets, so judges/operators can confirm
+    which environment/provider/thresholds are active without SSH access."""
+    return settings.summary()
 
 
 @api_router.get("/scenarios")
@@ -433,14 +452,16 @@ def invoke_tool(tool_name: str, input_data: dict):
 # ---------------------------------------------------------------------------
 @api_router.get("/aims/events")
 def aims_events():
-    """Full chronological Lyzr AIMS audit trail across all incidents."""
-    return recent_events()
+    """Full chronological Lyzr AIMS audit trail across all incidents.
+    Reads from Redis (backend/redis_store.py) rather than the in-process
+    event list, so the trail survives an in-process restart."""
+    return redis_incident_store.get_aims_events()
 
 
 @api_router.get("/aims/events/{incident_id}")
 def aims_events_for_incident(incident_id: str):
-    """Lyzr AIMS audit trail filtered to one incident."""
-    return recent_events(incident_id=incident_id)
+    """Lyzr AIMS audit trail filtered to one incident (Redis-backed)."""
+    return redis_incident_store.get_aims_events(incident_id=incident_id)
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +556,7 @@ async def pagerduty_webhook(payload: dict):
 # ---------------------------------------------------------------------------
 @api_router.get("/incidents")
 def list_incidents():
-    # Includes incidents restored from a prior process (backend/persistence.py)
+    # Includes incidents restored from a prior process (backend/redis_store.py)
     # that aren't currently live in memory, so completed incidents remain
     # visible in the list across an in-process restart.
     return store.list_incident_summaries()
@@ -731,7 +752,7 @@ def get_rca_pdf(incident_id: str):
 # ---------------------------------------------------------------------------
 @api_router.get("/incidents/{incident_id}/audit")
 def get_audit_trail(incident_id: str):
-    return recent_events(incident_id=incident_id)
+    return redis_incident_store.get_aims_events(incident_id=incident_id)
 
 
 # ---------------------------------------------------------------------------

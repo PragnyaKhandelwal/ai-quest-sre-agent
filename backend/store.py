@@ -1,11 +1,15 @@
 """
 backend/store.py
 
-In-memory incident store for the demo (a real deployment would swap this
-for Postgres/Redis without touching agents/ or the API routes). Also
-implements the `PipelineHooks` protocol expected by agents/pipeline.py,
-bridging agent orchestration to persistence, SSE broadcasting, and the
-HITL approval gate.
+Live incident state (the `INCIDENTS` dict below) stays in-process: it
+holds asyncio.Event/Queue objects for HITL synchronization and SSE
+fan-out that can't be serialized or shared across processes. Durability
+across restarts is layered on top via backend/redis_store.py -- every
+state change also writes a JSON-safe snapshot to Redis (or fakeredis in
+dev), which is what makes a completed incident survive an in-process
+restart. Also implements the `PipelineHooks` protocol expected by
+agents/pipeline.py, bridging agent orchestration to persistence, SSE
+broadcasting, and the HITL approval gate.
 """
 from __future__ import annotations
 
@@ -27,7 +31,7 @@ from agents.schemas import (
     TriageResult,
 )
 from backend.aims_logger import log_event as aims_log_event
-from backend.persistence import load_all_incidents, save_incident
+from backend.redis_store import incident_store as redis_incident_store
 
 
 @dataclass
@@ -108,7 +112,7 @@ TOTAL_TOKENS_USED = {"count": 0}
 
 # Populated once at startup by restore_persisted_incidents() (called from
 # backend/main.py's startup event). Holds read-only historical records for
-# incidents that existed in a previous process (backend/persistence.py) --
+# incidents that existed in a previous process (backend/redis_store.py) --
 # already in to_public_dict() shape, but NOT live IncidentState objects:
 # an in-process restart loses the asyncio.Event/Queue state a live incident
 # needs for HITL actions or further pipeline progress, so a restored
@@ -120,16 +124,16 @@ _GLOBAL_SUBSCRIBERS: List["asyncio.Queue[dict]"] = []
 
 
 def _persist(incident: IncidentState) -> None:
-    """Best-effort disk snapshot of one incident's public view -- never
-    raises (backend/persistence.py already swallows its own I/O errors)."""
-    save_incident(incident.incident_id, incident.to_public_dict())
+    """Best-effort Redis snapshot of one incident's public view -- never
+    raises (backend/redis_store.py already swallows its own I/O errors)."""
+    redis_incident_store.set_incident(incident.incident_id, incident.to_public_dict())
 
 
 def restore_persisted_incidents() -> int:
-    """Load any incidents persisted by a previous process into
-    RESTORED_INCIDENTS. Called once at FastAPI startup. Returns the count
-    restored, for the startup log line."""
-    restored = load_all_incidents()
+    """Load any incidents persisted by a previous process (backend/redis_store.py)
+    into RESTORED_INCIDENTS. Called once at FastAPI startup. Returns the
+    count restored, for the startup log line."""
+    restored = {d["incident_id"]: d for d in redis_incident_store.list_incidents() if d.get("incident_id")}
     RESTORED_INCIDENTS.update(restored)
     return len(restored)
 

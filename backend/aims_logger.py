@@ -15,8 +15,10 @@ separate CRITICAL anomaly event is emitted so it is impossible for a
 destructive action to be silently logged as routinely executed, even if
 the remediation agent's own check were ever bypassed upstream.
 
-If the Lyzr AIMS API is not reachable/configured, every event falls back
-to an append-only local JSON-lines file so no audit data is ever lost.
+Every event is also durably written to Redis (backend/redis_store.py),
+independent of whether the remote Lyzr AIMS API is reachable. If Lyzr
+AIMS is not reachable/configured, the event additionally falls back to
+an append-only local JSON-lines file, so no audit data is ever lost.
 """
 from __future__ import annotations
 
@@ -28,6 +30,7 @@ import requests
 
 from agents import config
 from agents.schemas import AIMSEvent
+from backend.redis_store import incident_store as redis_incident_store
 
 _LOCAL_LOG_PATH = Path(config.AIMS_LOCAL_FALLBACK_PATH)
 _session = requests.Session()
@@ -70,6 +73,12 @@ def _independent_safety_recheck(event: AIMSEvent) -> AIMSEvent:
 def _persist(event: AIMSEvent) -> None:
     record = event.model_dump()
     _IN_MEMORY_EVENTS.append(record)
+
+    # Durable copy in Redis (backend/redis_store.py) so the audit trail
+    # survives an in-process restart -- independent of, and in addition to,
+    # the remote Lyzr AIMS API / local file fallback below, which are about
+    # the *governed system of record*, not process-restart durability.
+    redis_incident_store.append_aims_event(record)
 
     sent_remote = False
     if config.LYZR_ENABLED:

@@ -5,35 +5,29 @@ Single source of truth for the entire governed multi-agent SRE system.
 Every agent, the pipeline, the backend, and the safety gate read their
 configuration from this file. Nothing here should be hardcoded elsewhere.
 
-All secrets are read from environment variables (see .env.example).
+Deployment-level config (API keys, thresholds, timeouts) is centralized in
+backend/settings.py's Pydantic Settings object and simply re-exported here
+under the module-level constant names the rest of agents/ already expects
+(so triage_agent.py, pipeline.py, etc. don't all need to change) -- this
+module still owns the SRE-domain logic that isn't a raw setting: the
+OpenAI/Groq provider-selection derivation, severity rules, and the
+destructive/safe action keyword lists.
 """
 import os
-from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Load .env if python-dotenv is available (optional convenience for local dev)
-# ---------------------------------------------------------------------------
-try:
-    from dotenv import load_dotenv
-
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-except ImportError:  # pragma: no cover - dotenv is optional
-    pass
-
-# backend.secrets.secrets is a layered resolver (HashiCorp Vault -> cloud
-# provider secrets -> environment variables -> .env, loaded above) that
-# replaces direct os.getenv() calls for actual credentials -- everything
-# else below (URLs, thresholds) is non-secret config and stays on os.getenv.
-from backend.secrets import secrets
+from backend.settings import settings
 
 # ---------------------------------------------------------------------------
 # Lyzr platform configuration
 # ---------------------------------------------------------------------------
-LYZR_API_KEY = secrets.get("LYZR_API_KEY", "")
+LYZR_API_KEY = settings.lyzr_api_key
+# Not part of backend/settings.py's centralized surface -- these two URLs
+# are effectively constants (no deployment has ever needed to override
+# them), kept overridable via plain env vars for that unlikely case.
 LYZR_BASE_URL = os.getenv("LYZR_BASE_URL", "https://agent.api.lyzr.ai/v2")
 LYZR_AIMS_URL = os.getenv("LYZR_AIMS_URL", "https://aims.api.lyzr.ai/v1")
-OPENAI_API_KEY = secrets.get("OPENAI_API_KEY", "")
-GROQ_API_KEY = secrets.get("GROQ_API_KEY", "")
+OPENAI_API_KEY = settings.openai_api_key
+GROQ_API_KEY = settings.groq_api_key
 
 # If no Lyzr key is configured, the system runs fully in "local simulation"
 # mode: every agent falls back to deterministic, schema-validated local
@@ -71,9 +65,9 @@ LYZR_ENABLED = bool(LYZR_API_KEY)
 #     "openai/gpt-oss-20b" is. Recheck that endpoint with your own key if
 #     this ever starts failing again; Groq's catalog changes over time.
 # ---------------------------------------------------------------------------
-MODEL = os.getenv("MODEL", "gpt-4o-mini")
-MAX_TOKENS = int(os.getenv("MAX_TOKENS", "1000"))
-TEMPERATURE = float(os.getenv("TEMPERATURE", "0.2"))
+MODEL = settings.default_model
+MAX_TOKENS = settings.max_tokens
+TEMPERATURE = settings.model_temperature
 
 if OPENAI_API_KEY:
     LLM_PROVIDER = "openai"
@@ -95,9 +89,9 @@ else:
 # ---------------------------------------------------------------------------
 # Governance thresholds
 # ---------------------------------------------------------------------------
-CONFIDENCE_THRESHOLD = float(os.getenv("CONFIDENCE_THRESHOLD", "0.70"))
-HITL_TIMEOUT_SECONDS = int(os.getenv("HITL_TIMEOUT_SECONDS", "300"))
-DEDUP_WINDOW_SECONDS = int(os.getenv("DEDUP_WINDOW_SECONDS", "300"))  # 5 minutes
+CONFIDENCE_THRESHOLD = settings.confidence_threshold
+HITL_TIMEOUT_SECONDS = settings.hitl_timeout_seconds
+DEDUP_WINDOW_SECONDS = settings.dedup_window_seconds
 
 # ---------------------------------------------------------------------------
 # Severity thresholds (used by the Triage agent to map signal -> P1..P4)

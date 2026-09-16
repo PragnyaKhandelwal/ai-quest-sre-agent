@@ -46,3 +46,17 @@ hvac==2.3.0
 # Structured JSON logging (backend/logging_config.py) -- machine-parseable
 # log lines compatible with Datadog/CloudWatch/Grafana Loki/ELK.
 python-json-logger==2.0.7
+
+# Redis-backed incident/AIMS durability (backend/redis_store.py), replacing
+# the file-based persistence.py fallback. Uses fakeredis (pure in-memory,
+# no server needed) whenever REDIS_URL is unset -- see backend/redis_store.py
+# for the honest scope note on what fakeredis actually persists.
+redis==5.0.8
+fakeredis==2.23.3
+
+# Centralized, typed, validated configuration (backend/settings.py),
+# replacing scattered os.getenv() calls across agents/ and backend/.
+pydantic-settings==2.3.4
+
+# Static security scan, run in CI (.github/workflows/ci.yml: security job).
+bandit==1.9.4

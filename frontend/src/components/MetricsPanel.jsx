@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { getIncidentMetrics, getMetrics } from "../api";
 
 function latencyColor(ms) {
-  if (ms < 2000) return "text-success";
-  if (ms < 5000) return "text-warn";
+  // Real Groq API calls normally take 2-4s -- thresholds widened so that
+  // normal real-inference latency doesn't read as an alarm (text-danger).
+  if (ms < 5000) return "text-success";
+  if (ms < 10000) return "text-warn";
   return "text-danger";
 }
 

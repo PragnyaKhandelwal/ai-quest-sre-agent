@@ -224,7 +224,7 @@ export default function App() {
   const counts = { p1, p2, resolved, hitl: hitlCount };
 
   return (
-    <div className="app-shell flex flex-col h-screen bg-base text-gray-100">
+    <div className="app-shell flex flex-col min-h-screen bg-base text-gray-100">
       <header className="app-header flex items-center justify-between px-5 py-3 border-b border-border bg-panel flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <span className="text-lg font-bold tracking-tight">

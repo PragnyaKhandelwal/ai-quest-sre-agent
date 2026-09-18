@@ -92,12 +92,12 @@ function HITLCard({ incident_id, request, onApprove, onReject, busy }) {
 export default function HITLQueue({ pending, onApprove, onReject, busyId }) {
   return (
     <div className="flex flex-col h-full bg-panel border-l border-border">
-      <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+      <div className="px-4 py-3 border-b border-border flex items-center justify-between flex-wrap gap-x-2 gap-y-1">
         <h2 className="text-sm font-semibold uppercase tracking-wider text-gray-300">
           HITL Approval Queue
         </h2>
         {pending.length > 0 && (
-          <span className="text-[10px] font-bold text-danger animate-pulse">{pending.length} PENDING</span>
+          <span className="text-[10px] font-bold text-danger animate-pulse whitespace-nowrap">{pending.length} PENDING</span>
         )}
       </div>
       <div className="flex-1 overflow-y-auto divide-y divide-border">

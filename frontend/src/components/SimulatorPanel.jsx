@@ -36,8 +36,8 @@ export default function SimulatorPanel({ onTriggered, exposeTrigger, children })
 
   return (
     <div className="flex flex-col gap-2 px-4 py-3 bg-panel border-b border-border">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-xs uppercase tracking-wider text-gray-400 font-semibold mr-1">
+      <div className="flex items-center gap-2 flex-nowrap overflow-x-auto pb-1">
+        <span className="text-xs uppercase tracking-wider text-gray-400 font-semibold mr-1 flex-shrink-0">
           Incident Simulator
         </span>
         {SCENARIOS.map((s) => (
@@ -45,7 +45,7 @@ export default function SimulatorPanel({ onTriggered, exposeTrigger, children })
             key={s.id}
             onClick={() => trigger(s.id)}
             disabled={loadingId !== null}
-            className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition disabled:opacity-40 disabled:cursor-not-allowed ${s.color}`}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap flex-shrink-0 ${s.color}`}
           >
             <span>{s.emoji}</span>
             <span>{s.label}</span>
@@ -53,7 +53,7 @@ export default function SimulatorPanel({ onTriggered, exposeTrigger, children })
           </button>
         ))}
         {lastError && (
-          <span className="text-danger text-xs ml-2">Error: {lastError}</span>
+          <span className="text-danger text-xs ml-2 flex-shrink-0 whitespace-nowrap">Error: {lastError}</span>
         )}
       </div>
       <div className="flex items-center justify-between gap-3 flex-wrap">

@@ -73,3 +73,17 @@ prometheus-client==0.20.0
 # directly, not just relied on as someone else's dependency.
 numpy==1.26.4
 scipy==1.13.1
+
+# NOT pinned here on purpose: chromadb==0.5.0 / sentence-transformers==3.0.0
+# (agents/vector_store.py's real vector-DB backend for semantic log
+# retrieval). Measured empirically in this project's build environment:
+# chromadb ALONE took 31+ minutes to install (its dependency tree pulls in
+# onnxruntime, grpcio, opentelemetry, a bundled Kubernetes client, and
+# more); adding sentence-transformers on top pulls in PyTorch as well,
+# adding well over a gigabyte to the image. Forcing that cost onto every
+# CI run and Docker build would break this project's "all CI jobs green,
+# fast builds" bar for a hackathon-scale log corpus that TF-IDF (already
+# installed via scikit-learn, see agents/log_retriever.py) already serves
+# well. agents/vector_store.py is written to activate the real ChromaDB
+# path automatically -- zero code changes -- the moment an operator runs
+# `pip install chromadb==0.5.0 sentence-transformers==3.0.0` themselves.

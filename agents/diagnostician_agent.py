@@ -11,10 +11,13 @@ given, satisfying the "no hallucinated evidence" safety requirement even
 when Lyzr is not configured.
 
 Retrieval quality: rather than handing the full log corpus to the agent,
-agents/log_retriever.py's TF-IDF retriever narrows the corpus down to the
-top-K lines most semantically relevant to the incident (a RAG pattern),
-which both shrinks the token budget and shrinks the surface area for
-hallucinated citations.
+agents/vector_store.py narrows the corpus down to the top-K lines most
+semantically relevant to the incident (a RAG pattern), which both shrinks
+the token budget and shrinks the surface area for hallucinated citations.
+Uses a real vector DB (ChromaDB + sentence-transformers) when installed,
+transparently falling back to agents/log_retriever.py's TF-IDF retriever
+otherwise -- see agents/vector_store.py's module docstring for why those
+aren't a default dependency here.
 
 Groundedness: every output additionally passes through
 agents/hallucination_guard.py, which independently re-verifies that every
@@ -30,10 +33,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from agents import config
-from agents.log_retriever import retrieve_relevant_logs
 from agents.lyzr_agents import DIAGNOSTIC_AGENT
 from agents.lyzr_inference import run_inference
 from agents.schemas import Alert, DiagnosisHypothesis, Evidence, TriageResult
+from agents.vector_store import create_incident_store
+from backend.config_watcher import live_config
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +151,7 @@ def _simulate(triage: TriageResult, retrieved_lines: List[str], retrieval_scores
             "retrieval_scores": retrieval_scores,
         }
 
-    requires_review = best_conf < config.CONFIDENCE_THRESHOLD
+    requires_review = best_conf < live_config.get("confidence_threshold", config.CONFIDENCE_THRESHOLD)
     return {
         "incident_id": triage.incident_id,
         "cause": best_hyp.cause,
@@ -181,16 +185,26 @@ def run_diagnosis(
     try:
         # --- Retrieval (RAG pattern): narrow the full corpus down to the
         # top-K lines most semantically relevant to this incident, and hand
-        # the agent ONLY those -- not the full corpus. ---
+        # the agent ONLY those -- not the full corpus. Uses a real vector
+        # DB (agents/vector_store.py, ChromaDB + sentence-transformers)
+        # when installed, transparently falling back to the TF-IDF
+        # retriever (agents/log_retriever.py) otherwise. ---
         query_parts = [triage.summary]
         if alerts:
             query_parts.extend(f"{a.title} {a.description}" for a in alerts)
         query = " ".join(query_parts)
-        retrieved = retrieve_relevant_logs(query, log_corpus, top_k=RETRIEVAL_TOP_K)
+
+        vector_store = create_incident_store(triage.incident_id)
+        vector_store.add_logs(log_corpus)
+        retrieved = vector_store.search(query, top_k=RETRIEVAL_TOP_K)
         retrieved_lines = [r["log_line"] for r in retrieved]
         retrieval_scores = [r["score"] for r in retrieved]
+        retrieval_backend = vector_store.stats()
         avg_score = sum(retrieval_scores) / len(retrieval_scores) if retrieval_scores else 0.0
-        logger.info(f"Retrieved {len(retrieved)} relevant logs with avg score {avg_score:.3f}")
+        logger.info(
+            f"Retrieved {len(retrieved)} relevant logs via {retrieval_backend['backend']} "
+            f"with avg score {avg_score:.3f}"
+        )
 
         user_message = json.dumps(
             {
@@ -216,9 +230,17 @@ def run_diagnosis(
 
         # Second, independent enforcement of the confidence gate -- even if
         # the model (or the simulation) forgot to set the flag, we set it
-        # here based on the centrally configured threshold.
-        if diagnosis.confidence < config.CONFIDENCE_THRESHOLD:
+        # here based on the centrally configured threshold. Reads through
+        # backend/config_watcher.py so a PATCH /config/live change to
+        # confidence_threshold takes effect on the very next diagnosis,
+        # with no restart.
+        if diagnosis.confidence < live_config.get("confidence_threshold", config.CONFIDENCE_THRESHOLD):
             diagnosis.requires_human_review = True
+
+        # Authoritative override (same pattern as agents/triage_agent.py's
+        # fingerprint/cluster_id/is_duplicate): which retrieval backend
+        # actually served this diagnosis is a local fact, never the LLM's.
+        diagnosis.retrieval_backend = retrieval_backend
 
         validation_report = meta.get("validation") or {
             "agent": AGENT_NAME, "schema_valid": True, "hallucination_signals": [],

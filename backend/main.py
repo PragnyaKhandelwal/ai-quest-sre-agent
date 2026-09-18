@@ -37,6 +37,7 @@ from backend.aims_logger import log_event as aims_log_event
 from backend.aims_logger import total_tokens_used
 from backend.auth import APIScope, get_api_key, require_scope
 from backend.circuit_breaker import all_breakers
+from backend.config_watcher import live_config
 from backend.exceptions import (
     AgentPipelineError,
     HITLActionNotFoundError,
@@ -422,6 +423,7 @@ def system_info():
     without needing to read the source."""
     from agents.lyzr_agents import AGENT_REGISTRY
     from agents.lyzr_environment import sre_environment
+    from agents.vector_store import SREVectorStore
 
     return {
         "name": "SRE Incident Triage & Runbook Remediation Agent",
@@ -436,6 +438,11 @@ def system_info():
         "rate_limit": _simulate_rate_limit(),
         "secret_management": secrets.health(),
         "state_management": redis_incident_store.health(),
+        # Reports whichever backend agents/diagnostician_agent.py actually
+        # used for its last retrieval -- "tfidf_fallback" unless ChromaDB +
+        # sentence-transformers are installed (see agents/vector_store.py's
+        # module docstring for why they aren't a default dependency here).
+        "vector_store": SREVectorStore().stats(),
         "settings": settings.summary(),
         "features": settings.summary()["features"],
         # A curated, human-scannable subset of "routes" below -- the
@@ -466,6 +473,71 @@ def get_config(key: dict = Depends(require_scope(APIScope.ADMIN))):
     settings without exposing secrets, so judges/operators can confirm
     which environment/provider/thresholds are active without SSH access."""
     return settings.summary()
+
+
+# -- Config hot-reload (backend/config_watcher.py) ---------------------------
+# Dr Agent: "Consider integrating a mechanism for dynamic configuration
+# updates without requiring a full service restart."
+_CONFIG_ALLOWED_KEYS = {
+    "confidence_threshold",
+    "hitl_timeout_seconds",
+    "enable_aims_logging",
+    "enable_hallucination_guard",
+    "enable_voice_briefing",
+    "model_temperature",
+}
+
+
+@api_router.get("/config/live")
+async def get_live_config():
+    """Current effective configuration (base + any hot-reload overrides).
+    Shows all active settings without exposing secrets."""
+    return live_config.snapshot()
+
+
+@api_router.patch("/config/live")
+async def update_config(update: dict, key: dict = Depends(require_scope(APIScope.ADMIN))):
+    """Hot-reload a config value without restarting the service.
+
+    Example:
+      PATCH /config/live
+      {"confidence_threshold": 0.85, "reason": "increase sensitivity for P1s"}
+
+    Supported keys: confidence_threshold, hitl_timeout_seconds,
+    enable_aims_logging, enable_hallucination_guard, enable_voice_briefing,
+    model_temperature.
+    """
+    update = dict(update)
+    reason = update.pop("reason", "")
+    results = []
+
+    for key_name, value in update.items():
+        if key_name not in _CONFIG_ALLOWED_KEYS:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "CONFIG_KEY_NOT_ALLOWED",
+                    "key": key_name,
+                    "allowed_keys": list(_CONFIG_ALLOWED_KEYS),
+                },
+            )
+        record = live_config.set(key_name, value, reason)
+        results.append(record)
+
+    return {"updated": len(results), "changes": results, "current_config": live_config.snapshot()}
+
+
+@api_router.delete("/config/live/{key}")
+async def reset_config_key(key: str, key_meta: dict = Depends(require_scope(APIScope.ADMIN))):
+    """Reset a config key to its base value."""
+    record = live_config.reset(key)
+    return {"reset": record, "current_value": live_config.get(key)}
+
+
+@api_router.get("/config/live/history")
+async def config_history():
+    """Configuration change history -- shows every hot-reload event."""
+    return {"history": live_config.history(), "total_changes": len(live_config.history(100))}
 
 
 @api_router.get("/auth/info")

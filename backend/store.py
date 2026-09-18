@@ -31,6 +31,7 @@ from agents.schemas import (
     TriageResult,
 )
 from backend.aims_logger import log_event as aims_log_event
+from backend.config_watcher import live_config
 from backend.prometheus_metrics import (
     hitl_decisions_total,
     incidents_total,
@@ -308,8 +309,14 @@ class StoreHooks:
         _broadcast_global({"type": "hitl_pending", "incident": incident.summary_dict()})
 
         async def _wait_one(req: HITLRequest, ev: asyncio.Event) -> HITLRequest:
+            # backend/config_watcher.py: a PATCH /config/live change to
+            # hitl_timeout_seconds takes effect on the very next HITL wait,
+            # no restart needed -- this is the actual enforcement point
+            # (agents/pipeline.py's own use of the same setting is only for
+            # display/bookkeeping on the HITLRequest, not enforcement).
+            timeout_seconds = live_config.get("hitl_timeout_seconds", config.HITL_TIMEOUT_SECONDS)
             try:
-                await asyncio.wait_for(ev.wait(), timeout=config.HITL_TIMEOUT_SECONDS)
+                await asyncio.wait_for(ev.wait(), timeout=timeout_seconds)
             except asyncio.TimeoutError:
                 if req.status == HITLStatus.PENDING:
                     req.status = HITLStatus.TIMED_OUT

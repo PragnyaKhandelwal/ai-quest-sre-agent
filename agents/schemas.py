@@ -118,10 +118,15 @@ class DiagnosisHypothesis(BaseModel):
     affected_components: List[str]
     requires_human_review: bool = False
     reasoning: str = ""
-    # Populated by the semantic log retriever (agents/log_retriever.py):
+    # Populated by the semantic log retriever (agents/log_retriever.py, or
+    # agents/vector_store.py when a real vector DB is installed):
     # cosine-similarity scores of the log lines actually retrieved and
     # handed to this agent, evidencing retrieval quality to judges.
     retrieval_scores: List[float] = Field(default_factory=list)
+    # agents/vector_store.py's SREVectorStore.stats() -- which retrieval
+    # backend actually served this diagnosis (real ChromaDB vector search
+    # vs. the TF-IDF fallback), never set by the LLM.
+    retrieval_backend: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------

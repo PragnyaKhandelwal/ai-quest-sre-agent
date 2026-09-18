@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 import psutil
-from fastapi import APIRouter, FastAPI, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
@@ -35,6 +35,7 @@ from agents.tools import call_tool, describe_tools
 from backend import store
 from backend.aims_logger import log_event as aims_log_event
 from backend.aims_logger import total_tokens_used
+from backend.auth import APIScope, get_api_key, require_scope
 from backend.circuit_breaker import all_breakers
 from backend.exceptions import (
     AgentPipelineError,
@@ -359,7 +360,7 @@ async def health():
 
 
 @api_router.get("/lyzr/status")
-async def lyzr_status():
+async def lyzr_status(key: dict = Depends(require_scope(APIScope.ADMIN))):
     """
     Shows the Lyzr Agent Studio Environment · Agent · Inference status.
     This endpoint demonstrates the clean 3-tier separation required by the brief.
@@ -460,11 +461,40 @@ def system_info():
 
 
 @api_router.get("/config")
-def get_config():
+def get_config(key: dict = Depends(require_scope(APIScope.ADMIN))):
     """Public configuration summary (backend/settings.py) -- shows active
     settings without exposing secrets, so judges/operators can confirm
     which environment/provider/thresholds are active without SSH access."""
     return settings.summary()
+
+
+@api_router.get("/auth/info")
+async def auth_info():
+    """Authentication information for this API -- unauthenticated by design,
+    so a caller can discover how to authenticate before they have a key."""
+    demo_key = settings.demo_api_key
+    return {
+        "auth_enabled": settings.auth_enabled,
+        "schemes": [
+            {
+                "name": "API Key Header",
+                "header": "X-API-Key",
+                "example": f"curl -H 'X-API-Key: {demo_key}' /incidents",
+            },
+            {
+                "name": "API Key Query",
+                "param": "api_key",
+                "example": f"curl '/incidents?api_key={demo_key}'",
+            },
+        ],
+        "scopes": {
+            "read": "GET endpoints -- incidents, metrics, AIMS",
+            "write": "POST endpoints -- simulate, alerts ingest/webhook, HITL approve/reject, incident reset",
+            "admin": "All endpoints including /config and /lyzr/status",
+        },
+        "demo_key": demo_key,
+        "note": "AUTH_ENABLED=false by default -- all endpoints open for demo",
+    }
 
 
 @api_router.get("/scenarios")
@@ -539,7 +569,7 @@ def list_tools():
 
 
 @api_router.post("/tools/{tool_name}")
-def invoke_tool(tool_name: str, input_data: dict):
+def invoke_tool(tool_name: str, input_data: dict, key: dict = Depends(require_scope(APIScope.WRITE))):
     """Call a tool directly with a JSON body (for demo/testing). Every call
     is logged to Lyzr AIMS with the tool name in metadata.tool_called, so
     the audit trail reflects real tool invocations, not just agent calls."""
@@ -588,7 +618,7 @@ def aims_events_for_incident(incident_id: str):
 # Alert ingestion
 # ---------------------------------------------------------------------------
 @api_router.post("/alerts/ingest")
-async def ingest_alerts(payload: IngestPayload):
+async def ingest_alerts(payload: IngestPayload, key: dict = Depends(require_scope(APIScope.WRITE))):
     if not payload.alerts:
         raise HTTPException(status_code=400, detail="At least one alert is required.")
     incident_id = _new_incident_id()
@@ -604,7 +634,7 @@ async def ingest_alerts(payload: IngestPayload):
 
 @api_router.post("/simulate/{scenario}")
 @limiter.limit(_simulate_rate_limit)
-async def simulate(request: Request, scenario: int):
+async def simulate(request: Request, scenario: int, key: dict = Depends(require_scope(APIScope.WRITE))):
     try:
         name, alerts, log_corpus = get_scenario(scenario)
     except ValueError:
@@ -640,7 +670,7 @@ async def _process_webhook_alert(alert_dict: dict) -> str:
 
 
 @api_router.post("/alerts/webhook")
-async def pagerduty_webhook(payload: dict):
+async def pagerduty_webhook(payload: dict, key: dict = Depends(require_scope(APIScope.WRITE))):
     """
     PagerDuty-compatible webhook endpoint.
     Real PagerDuty/Prometheus Alertmanager can POST here directly.
@@ -675,7 +705,7 @@ async def pagerduty_webhook(payload: dict):
 # Incidents
 # ---------------------------------------------------------------------------
 @api_router.get("/incidents")
-def list_incidents():
+def list_incidents(key: Optional[dict] = Depends(get_api_key)):
     # Includes incidents restored from a prior process (backend/redis_store.py)
     # that aren't currently live in memory, so completed incidents remain
     # visible in the list across an in-process restart.
@@ -804,7 +834,7 @@ async def incident_patterns():
 
 
 @api_router.post("/incidents/{incident_id}/reset")
-def reset_incident(incident_id: str):
+def reset_incident(incident_id: str, key: dict = Depends(require_scope(APIScope.WRITE))):
     """Reset incident status -- useful for demo and judge testing. This is
     a cosmetic reset (status + pending HITL requests only, matching the
     incident's actual fields): it does not re-run the pipeline or clear
@@ -878,7 +908,7 @@ def hitl_pending():
 
 
 @api_router.post("/hitl/{incident_id}/approve")
-def hitl_approve(incident_id: str, payload: HITLDecisionPayload):
+def hitl_approve(incident_id: str, payload: HITLDecisionPayload, key: dict = Depends(require_scope(APIScope.WRITE))):
     try:
         req = store.resolve_hitl(
             incident_id, payload.request_id, approve=True, decided_by=payload.decided_by, note=payload.note
@@ -891,7 +921,7 @@ def hitl_approve(incident_id: str, payload: HITLDecisionPayload):
 
 
 @api_router.post("/hitl/{incident_id}/reject")
-def hitl_reject(incident_id: str, payload: HITLDecisionPayload):
+def hitl_reject(incident_id: str, payload: HITLDecisionPayload, key: dict = Depends(require_scope(APIScope.WRITE))):
     try:
         req = store.resolve_hitl(
             incident_id, payload.request_id, approve=False, decided_by=payload.decided_by, note=payload.note

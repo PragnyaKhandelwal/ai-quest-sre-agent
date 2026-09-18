@@ -117,6 +117,19 @@ class SREAgentSettings(BaseSettings):
     # -- Rate limiting --------------------------------------------------------
     rate_limit_simulate: str = Field(default="10/minute", description="Rate limit for /simulate endpoints")
 
+    # -- API authentication (backend/auth.py) --------------------------------
+    # Off by default: every route stays open for demo/judging. Set
+    # AUTH_ENABLED=true (e.g. in Render's dashboard) to actually enforce it.
+    # The 4 key fields are plain strings here for the same reason as
+    # lyzr/openai/groq_api_key above -- the model_validator below routes
+    # them through backend/secrets.py's Vault -> cloud -> env resolver
+    # afterwards, so a configured Vault is authoritative for these too.
+    auth_enabled: bool = Field(default=False, description="Enforce API key authentication")
+    demo_api_key: str = Field(default="sre-demo-2026", description="Demo ADMIN-scope key for judges/testing")
+    read_api_key: str = Field(default="", description="Read-only scope API key")
+    write_api_key: str = Field(default="", description="Read+write scope API key")
+    admin_api_key: str = Field(default="", description="Full admin scope API key")
+
     # -- Feature flags ----------------------------------------------------------
     # Declared here for centralized visibility (surfaced in summary() below)
     # but not yet wired as runtime gates in agents/backend -- flipping one of
@@ -135,6 +148,10 @@ class SREAgentSettings(BaseSettings):
         self.lyzr_api_key = secrets.get("LYZR_API_KEY", self.lyzr_api_key)
         self.openai_api_key = secrets.get("OPENAI_API_KEY", self.openai_api_key)
         self.groq_api_key = secrets.get("GROQ_API_KEY", self.groq_api_key)
+        self.demo_api_key = secrets.get("DEMO_API_KEY", self.demo_api_key)
+        self.read_api_key = secrets.get("READ_API_KEY", self.read_api_key)
+        self.write_api_key = secrets.get("WRITE_API_KEY", self.write_api_key)
+        self.admin_api_key = secrets.get("ADMIN_API_KEY", self.admin_api_key)
         return self
 
     # -- Computed properties ---------------------------------------------------
@@ -184,6 +201,7 @@ class SREAgentSettings(BaseSettings):
             "dedup_window_seconds": self.dedup_window_seconds,
             "redis_configured": bool(self.redis_url),
             "vault_configured": bool(self.vault_addr),
+            "auth_enabled": self.auth_enabled,
             "rate_limit_simulate": self.rate_limit_simulate,
             "workers": self.workers,
             "log_level": self.log_level,

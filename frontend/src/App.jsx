@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import SimulatorPanel from "./components/SimulatorPanel";
 import AlertStream from "./components/AlertStream";
 import AgentTrace from "./components/AgentTrace";
@@ -7,16 +7,14 @@ import RCAPanel from "./components/RCAPanel";
 import MetricsPanel from "./components/MetricsPanel";
 import VoiceBriefing from "./components/VoiceBriefing";
 import AIMSLog from "./components/AIMSLog";
+import { subscribeGlobalEvents, subscribeIncidentStream } from "./api";
 import {
-  approveHitl,
-  getHealth,
-  getHitlPending,
-  getIncident,
-  listIncidents,
-  rejectHitl,
-  subscribeGlobalEvents,
-  subscribeIncidentStream,
-} from "./api";
+  useIncidentStore,
+  selectP1Count,
+  selectP2Count,
+  selectResolvedCount,
+  selectHitlCount,
+} from "./store/useIncidentStore";
 
 const SCENARIO_KEY_MAP = { 1: 1, 2: 2, 3: 3, 4: 4 };
 
@@ -55,13 +53,27 @@ function exportIncidentsCsv(incidents) {
 }
 
 export default function App() {
-  const [incidents, setIncidents] = useState([]);
-  const [incidentsLoading, setIncidentsLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
-  const [selectedDetail, setSelectedDetail] = useState(null);
-  const [pendingHitl, setPendingHitl] = useState([]);
-  const [busyHitlId, setBusyHitlId] = useState(null);
-  const [healthy, setHealthy] = useState(true);
+  const incidents = useIncidentStore((s) => s.incidents);
+  const incidentsLoading = useIncidentStore((s) => s.incidentsLoading);
+  const selectedId = useIncidentStore((s) => s.selectedIncidentId);
+  const selectedDetail = useIncidentStore((s) => s.selectedIncidentDetail);
+  const pendingHitl = useIncidentStore((s) => s.pendingHITL);
+  const busyHitlId = useIncidentStore((s) => s.busyHitlId);
+  const healthy = useIncidentStore((s) => s.healthy);
+  const p1 = useIncidentStore(selectP1Count);
+  const p2 = useIncidentStore(selectP2Count);
+  const resolved = useIncidentStore(selectResolvedCount);
+  const hitlCount = useIncidentStore(selectHitlCount);
+
+  const selectIncident = useIncidentStore((s) => s.selectIncident);
+  const fetchIncidents = useIncidentStore((s) => s.fetchIncidents);
+  const fetchHitlPending = useIncidentStore((s) => s.fetchHitlPending);
+  const fetchSelectedDetail = useIncidentStore((s) => s.fetchSelectedDetail);
+  const fetchMetrics = useIncidentStore((s) => s.fetchMetrics);
+  const checkHealth = useIncidentStore((s) => s.checkHealth);
+  const approveHITL = useIncidentStore((s) => s.approveHITL);
+  const rejectHITL = useIncidentStore((s) => s.rejectHITL);
+
   const [theme, setTheme] = useState(() => {
     try {
       return localStorage.getItem("sre-theme") || "dark";
@@ -71,47 +83,7 @@ export default function App() {
   });
 
   const incidentStreamCloser = useRef(null);
-  const knownIncidentIds = useRef(new Set());
-  const knownHitlIds = useRef(new Set());
   const scenarioTriggerRef = useRef(null);
-
-  const refreshIncidents = useCallback(() => {
-    listIncidents()
-      .then((list) => {
-        // Sound alert on a newly-seen P1 incident -- diffed against the
-        // previously-seen id set rather than array length, so a resolved
-        // incident dropping off the list never triggers a false alarm.
-        const freshP1 = list.some(
-          (i) => i.severity === "P1" && !knownIncidentIds.current.has(i.incident_id)
-        );
-        knownIncidentIds.current = new Set(list.map((i) => i.incident_id));
-        if (freshP1) playTone([[880, 0], [1046, 0.1]]);
-        setIncidents(list);
-        setIncidentsLoading(false);
-      })
-      .catch(() => {
-        setHealthy(false);
-        setIncidentsLoading(false);
-      });
-  }, []);
-
-  const refreshHitl = useCallback(() => {
-    getHitlPending()
-      .then((list) => {
-        const freshHitl = list.some(
-          ({ request }) => !knownHitlIds.current.has(request.request_id)
-        );
-        knownHitlIds.current = new Set(list.map(({ request }) => request.request_id));
-        if (freshHitl) playTone([[440, 0], [440, 0.15], [440, 0.3]]);
-        setPendingHitl(list);
-      })
-      .catch(() => {});
-  }, []);
-
-  const refreshSelectedDetail = useCallback((id) => {
-    if (!id) return;
-    getIncident(id).then(setSelectedDetail).catch(() => {});
-  }, []);
 
   // Theme toggle -- persisted per-browser; see index.css's
   // [data-theme="light"] rules for the overrides applied to the app chrome
@@ -133,8 +105,8 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const incidentId = params.get("incident");
-    if (incidentId) setSelectedId(incidentId);
-  }, []);
+    if (incidentId) selectIncident(incidentId);
+  }, [selectIncident]);
 
   // Keyboard shortcuts: Ctrl/Cmd+1..4 trigger a scenario, Ctrl/Cmd+K clears
   // the current selection (there is no bulk-delete endpoint, so this can't
@@ -147,35 +119,73 @@ export default function App() {
         scenarioTriggerRef.current?.(SCENARIO_KEY_MAP[e.key]);
       } else if (e.key === "k") {
         e.preventDefault();
-        setSelectedId(null);
+        selectIncident(null);
       }
     }
     window.addEventListener("keydown", handleKeyPress);
     return () => window.removeEventListener("keydown", handleKeyPress);
+  }, [selectIncident]);
+
+  // Sound alerts on a newly-seen P1 or a newly-seen HITL request --
+  // genuinely uses subscribeWithSelector (rather than a plain useEffect on
+  // the `incidents`/`pendingHitl` values above) so this diffing logic runs
+  // exactly once per real store update, independent of React's render
+  // cycle. Diffs by ID membership (not a raw count comparison), so a P1
+  // resolving in the same tick a new one arrives still alerts correctly.
+  useEffect(() => {
+    let knownP1Ids = new Set();
+    let knownHitlIds = new Set();
+
+    const unsubIncidents = useIncidentStore.subscribe(
+      (s) => s.incidents,
+      (list) => {
+        const activeP1 = list.filter((i) => i.severity === "P1" && i.status !== "RESOLVED");
+        const freshP1 = activeP1.some((i) => !knownP1Ids.has(i.incident_id));
+        knownP1Ids = new Set(activeP1.map((i) => i.incident_id));
+        if (freshP1) playTone([[880, 0], [1046, 0.1]]);
+      }
+    );
+    const unsubHitl = useIncidentStore.subscribe(
+      (s) => s.pendingHITL,
+      (list) => {
+        const freshHitl = list.some(({ request }) => !knownHitlIds.has(request.request_id));
+        knownHitlIds = new Set(list.map(({ request }) => request.request_id));
+        if (freshHitl) playTone([[440, 0], [440, 0.15], [440, 0.3]]);
+      }
+    );
+    return () => {
+      unsubIncidents();
+      unsubHitl();
+    };
   }, []);
 
   // Initial load + global SSE subscription
   useEffect(() => {
-    refreshIncidents();
-    refreshHitl();
-    getHealth()
-      .then(() => setHealthy(true))
-      .catch(() => setHealthy(false));
+    fetchIncidents();
+    fetchHitlPending();
+    fetchMetrics();
+    checkHealth();
 
     const closeGlobal = subscribeGlobalEvents(
       (payload) => {
-        setHealthy(true);
+        useIncidentStore.setState({ healthy: true });
         if (payload.type === "incident_created" || payload.type === "status_update") {
-          refreshIncidents();
+          fetchIncidents();
         }
         if (["hitl_pending", "hitl_resolved", "status_update"].includes(payload.type)) {
-          refreshHitl();
+          fetchHitlPending();
         }
-        if (payload.type === "trace" && payload.incident_id === selectedId) {
-          refreshSelectedDetail(selectedId);
+        // Reads the CURRENT selection from the store rather than closing
+        // over `selectedId` (this effect intentionally has an empty dep
+        // array so it doesn't resubscribe on every selection change) --
+        // the dedicated per-incident stream below already covers this via
+        // its own [selectedId]-scoped effect, so this is a low-cost extra
+        // safety net, not the primary mechanism.
+        if (payload.type === "trace" && payload.incident_id === useIncidentStore.getState().selectedIncidentId) {
+          fetchSelectedDetail(payload.incident_id);
         }
       },
-      () => setHealthy(false)
+      () => useIncidentStore.setState({ healthy: false })
     );
 
     return () => {
@@ -191,14 +201,14 @@ export default function App() {
       incidentStreamCloser.current = null;
     }
     if (!selectedId) {
-      setSelectedDetail(null);
+      useIncidentStore.setState({ selectedIncidentDetail: null });
       return;
     }
-    refreshSelectedDetail(selectedId);
+    fetchSelectedDetail(selectedId);
     incidentStreamCloser.current = subscribeIncidentStream(
       selectedId,
-      () => refreshSelectedDetail(selectedId),
-      () => refreshSelectedDetail(selectedId)
+      () => fetchSelectedDetail(selectedId),
+      () => fetchSelectedDetail(selectedId)
     );
     return () => {
       if (incidentStreamCloser.current) incidentStreamCloser.current();
@@ -207,36 +217,11 @@ export default function App() {
   }, [selectedId]);
 
   function handleSimulateTriggered(res) {
-    refreshIncidents();
-    setSelectedId(res.incident_id);
+    fetchIncidents();
+    selectIncident(res.incident_id);
   }
 
-  async function handleApprove(incidentId, requestId) {
-    setBusyHitlId(requestId);
-    try {
-      await approveHitl(incidentId, requestId);
-      refreshHitl();
-    } finally {
-      setBusyHitlId(null);
-    }
-  }
-
-  async function handleReject(incidentId, requestId) {
-    setBusyHitlId(requestId);
-    try {
-      await rejectHitl(incidentId, requestId);
-      refreshHitl();
-    } finally {
-      setBusyHitlId(null);
-    }
-  }
-
-  const counts = {
-    p1: incidents.filter((i) => i.severity === "P1").length,
-    p2: incidents.filter((i) => i.severity === "P2").length,
-    resolved: incidents.filter((i) => i.status === "RESOLVED").length,
-    hitl: pendingHitl.length,
-  };
+  const counts = { p1, p2, resolved, hitl: hitlCount };
 
   return (
     <div className="app-shell flex flex-col h-screen bg-base text-gray-100">
@@ -287,13 +272,13 @@ export default function App() {
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-10 min-h-0">
         <div className="lg:col-span-3 min-h-0">
-          <AlertStream incidents={incidents} loading={incidentsLoading} selectedId={selectedId} onSelect={setSelectedId} />
+          <AlertStream incidents={incidents} loading={incidentsLoading} selectedId={selectedId} onSelect={selectIncident} />
         </div>
         <div className="lg:col-span-4 min-h-0">
           <AgentTrace incident={selectedDetail} />
         </div>
         <div className="lg:col-span-3 min-h-0">
-          <HITLQueue pending={pendingHitl} onApprove={handleApprove} onReject={handleReject} busyId={busyHitlId} />
+          <HITLQueue pending={pendingHitl} onApprove={approveHITL} onReject={rejectHITL} busyId={busyHitlId} />
         </div>
       </div>
 

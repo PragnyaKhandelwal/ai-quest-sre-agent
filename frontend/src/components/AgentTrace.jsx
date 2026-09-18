@@ -190,23 +190,36 @@ export default function AgentTrace({ incident }) {
           <DecisionGraph incident={incident} />
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <div className="flex-1 overflow-y-auto p-4">
           {incident.trace.length === 0 && (
             <div className="text-gray-500 text-sm">Waiting for agents to start reasoning...</div>
           )}
-          {incident.trace.map((step) => {
+          {incident.trace.map((step, i) => {
             // Each hallucination_guard.py report is keyed by agent name (only
             // the diagnostician runs through the guard today); match it to
             // its trace step so the badge renders inline with that step.
             const hallucinationReport = (incident.hallucination_reports || []).find(
               (r) => r.agent === step.agent_name
             );
+            const isLast = i === incident.trace.length - 1;
             return (
-              <div key={step.step_id}>
-                <TraceStep step={step} hallucinationReport={hallucinationReport} />
-                {step.agent_name === "RootCauseDiagnosticianAgent" && (
-                  <AnomalyPanel incidentId={incident.incident_id} />
-                )}
+              <div key={step.step_id} className="flex gap-3">
+                {/* Timeline rail: filled dot per step, connected by a
+                    vertical line down to the next one. */}
+                <div className="flex flex-col items-center w-2.5 flex-shrink-0">
+                  <span
+                    className={`w-2.5 h-2.5 rounded-full mt-2 flex-shrink-0 ${
+                      step.blocked ? "bg-danger" : "bg-cyan"
+                    }`}
+                  />
+                  {!isLast && <span className="w-px flex-1 bg-border mt-1" />}
+                </div>
+                <div className="flex-1 min-w-0 pb-3">
+                  <TraceStep step={step} hallucinationReport={hallucinationReport} />
+                  {step.agent_name === "RootCauseDiagnosticianAgent" && (
+                    <AnomalyPanel incidentId={incident.incident_id} />
+                  )}
+                </div>
               </div>
             );
           })}

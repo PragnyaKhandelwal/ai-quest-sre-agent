@@ -71,11 +71,18 @@ export default function AlertStream({ incidents, loading, selectedId, onSelect }
           </>
         )}
         {!loading && filteredIncidents.length === 0 && (
-          <div className="p-6 text-center text-gray-500 text-sm flex flex-col items-center gap-2">
-            <span className="text-2xl opacity-40">📡</span>
-            {incidents.length === 0
-              ? "No incidents yet. Trigger a simulation above ⬆"
-              : "No incidents match your filter."}
+          <div className="p-6 text-center flex flex-col items-center gap-2">
+            <span className="text-2xl opacity-40">{incidents.length === 0 ? "🛡️" : "📡"}</span>
+            {incidents.length === 0 ? (
+              <>
+                <div className="text-sm font-mono-log text-gray-400">All systems nominal</div>
+                <div className="text-[11px] font-mono-log text-gray-600">
+                  Trigger a simulation above to begin incident response ↑
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-gray-500">No incidents match your filter.</div>
+            )}
           </div>
         )}
         {!loading && filteredIncidents.map((inc) => (

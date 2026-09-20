@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sre-agent-backend"
-version = "2.0.0"
+version = "2.0.1"
 description = "HiDevs AI Quest PS03 -- Enterprise Cloud Incident Triage & Runbook Remediation Agent"
 requires-python = ">=3.11"
 # Canonical dependency list, kept in sync with backend/requirements.txt

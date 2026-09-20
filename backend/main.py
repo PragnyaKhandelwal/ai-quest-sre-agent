@@ -84,7 +84,7 @@ except Exception:
 app = FastAPI(
     title="Governed Multi-Agent SRE Incident Triage & Remediation",
     description="HiDevs AI Quest PS03 -- Enterprise Cloud Incident Triage & Runbook Remediation Agent",
-    version="2.0.0",
+    version="2.0.1",
 )
 
 app.add_middleware(

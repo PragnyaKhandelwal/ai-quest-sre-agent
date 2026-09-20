@@ -229,7 +229,7 @@ def test_system_info_returns_snapshot(client: TestClient):
     resp = client.get("/system/info")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["version"] == "2.0.0"
+    assert body["version"] == "2.0.1"
     assert body["uptime_seconds"] >= 0
     assert "agents" in body
     assert len(body["agents"]) == 4

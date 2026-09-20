@@ -20,7 +20,7 @@ import sys
 from pythonjsonlogger import jsonlogger
 
 SERVICE_NAME = "sre-agent-backend"
-SERVICE_VERSION = "2.0.0"
+SERVICE_VERSION = "2.0.1"
 
 
 class SREJsonFormatter(jsonlogger.JsonFormatter):

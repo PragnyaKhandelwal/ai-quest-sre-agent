@@ -53,12 +53,15 @@ function exportIncidentsCsv(incidents) {
 }
 
 export default function App() {
+  // AlertStream, HITLQueue, and MetricsPanel now subscribe to the store
+  // directly (see their own optional-prop-override fallbacks), so App no
+  // longer threads incidents/pendingHITL/busyHitlId/loading through props
+  // to them -- only what App itself still needs (header counts, the CSV
+  // export, the per-incident SSE subscription, and the props AgentTrace/
+  // RCAPanel genuinely need) is read here.
   const incidents = useIncidentStore((s) => s.incidents);
-  const incidentsLoading = useIncidentStore((s) => s.incidentsLoading);
   const selectedId = useIncidentStore((s) => s.selectedIncidentId);
   const selectedDetail = useIncidentStore((s) => s.selectedIncidentDetail);
-  const pendingHitl = useIncidentStore((s) => s.pendingHITL);
-  const busyHitlId = useIncidentStore((s) => s.busyHitlId);
   const healthy = useIncidentStore((s) => s.healthy);
   const p1 = useIncidentStore(selectP1Count);
   const p2 = useIncidentStore(selectP2Count);
@@ -71,8 +74,6 @@ export default function App() {
   const fetchSelectedDetail = useIncidentStore((s) => s.fetchSelectedDetail);
   const fetchMetrics = useIncidentStore((s) => s.fetchMetrics);
   const checkHealth = useIncidentStore((s) => s.checkHealth);
-  const approveHITL = useIncidentStore((s) => s.approveHITL);
-  const rejectHITL = useIncidentStore((s) => s.rejectHITL);
 
   const [theme, setTheme] = useState(() => {
     try {
@@ -267,18 +268,18 @@ export default function App() {
         <div className="text-[10px] uppercase tracking-wider text-gray-500 font-semibold mb-2">
           Session Metrics
         </div>
-        <MetricsPanel selectedIncident={selectedDetail} />
+        <MetricsPanel />
       </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-10 min-h-0">
         <div className="lg:col-span-3 min-h-0">
-          <AlertStream incidents={incidents} loading={incidentsLoading} selectedId={selectedId} onSelect={selectIncident} />
+          <AlertStream />
         </div>
         <div className="lg:col-span-4 min-h-0">
           <AgentTrace incident={selectedDetail} />
         </div>
         <div className="lg:col-span-3 min-h-0">
-          <HITLQueue pending={pendingHitl} onApprove={approveHITL} onReject={rejectHITL} busyId={busyHitlId} />
+          <HITLQueue />
         </div>
       </div>
 

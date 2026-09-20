@@ -40,12 +40,18 @@ from backend.circuit_breaker import all_breakers
 from backend.config_watcher import live_config
 from backend.exceptions import (
     AgentPipelineError,
+    AnomalyDetectionError,
+    ConfigKeyNotAllowedError,
+    EmptyAlertBatchError,
     HITLActionNotFoundError,
     HITLAlreadyDecidedError,
     IncidentNotFoundError,
     InvalidScenarioError,
+    RCANotAvailableError,
     SREAgentException,
+    ToolInputValidationError,
     ToolNotFoundError,
+    VectorStoreError,
 )
 from backend.logging_config import setup_logging
 from backend.mock_generator import get_scenario, list_scenarios
@@ -425,6 +431,15 @@ def system_info():
     from agents.lyzr_environment import sre_environment
     from agents.vector_store import SREVectorStore
 
+    # SREVectorStore() itself already degrades internally to TF-IDF on
+    # missing optional deps (see its module docstring), so an exception
+    # here reflects a real, deeper failure -- surfaced as a specific
+    # VectorStoreError rather than letting it hit the generic 500 handler.
+    try:
+        vector_store_stats = SREVectorStore().stats()
+    except Exception as exc:
+        raise VectorStoreError(str(exc)) from exc
+
     return {
         "name": "SRE Incident Triage & Runbook Remediation Agent",
         "version": app.version,
@@ -442,7 +457,11 @@ def system_info():
         # used for its last retrieval -- "tfidf_fallback" unless ChromaDB +
         # sentence-transformers are installed (see agents/vector_store.py's
         # module docstring for why they aren't a default dependency here).
-        "vector_store": SREVectorStore().stats(),
+        # SREVectorStore() itself already degrades internally to TF-IDF on
+        # missing optional deps, so a raised exception here means a real,
+        # deeper failure (e.g. a corrupted on-disk index) -- surfaced as a
+        # specific VectorStoreError rather than a generic 500.
+        "vector_store": vector_store_stats,
         "settings": settings.summary(),
         "features": settings.summary()["features"],
         # A curated, human-scannable subset of "routes" below -- the
@@ -513,14 +532,7 @@ async def update_config(update: dict, key: dict = Depends(require_scope(APIScope
 
     for key_name, value in update.items():
         if key_name not in _CONFIG_ALLOWED_KEYS:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "CONFIG_KEY_NOT_ALLOWED",
-                    "key": key_name,
-                    "allowed_keys": list(_CONFIG_ALLOWED_KEYS),
-                },
-            )
+            raise ConfigKeyNotAllowedError(key_name, list(_CONFIG_ALLOWED_KEYS))
         record = live_config.set(key_name, value, reason)
         results.append(record)
 
@@ -646,13 +658,18 @@ def invoke_tool(tool_name: str, input_data: dict, key: dict = Depends(require_sc
     is logged to Lyzr AIMS with the tool name in metadata.tool_called, so
     the audit trail reflects real tool invocations, not just agent calls."""
     start = time.perf_counter()
+    # Checked explicitly (rather than relying on call_tool's internal
+    # `raise ValueError` for an unknown name) because pydantic's own
+    # ValidationError is ALSO a ValueError subclass -- a bare
+    # `except ValueError` below would misreport a genuine input-validation
+    # failure on a real tool as "tool not found".
+    if tool_name not in describe_tools():
+        raise ToolNotFoundError(tool_name, list(describe_tools().keys()))
     try:
         result = call_tool(tool_name, input_data)
-    except ValueError:
-        raise ToolNotFoundError(tool_name, list(describe_tools().keys()))
     except Exception as exc:
         logger.error("Tool call failed: %s", tool_name, exc_info=True)
-        raise HTTPException(status_code=422, detail=f"Invalid input for tool '{tool_name}': {exc}")
+        raise ToolInputValidationError(tool_name, str(exc))
 
     latency_ms = (time.perf_counter() - start) * 1000
     aims_log_event(
@@ -692,7 +709,7 @@ def aims_events_for_incident(incident_id: str):
 @api_router.post("/alerts/ingest")
 async def ingest_alerts(payload: IngestPayload, key: dict = Depends(require_scope(APIScope.WRITE))):
     if not payload.alerts:
-        raise HTTPException(status_code=400, detail="At least one alert is required.")
+        raise EmptyAlertBatchError()
     incident_id = _new_incident_id()
     log_corpus = payload.logs or []
     try:
@@ -853,6 +870,16 @@ async def anomaly_analysis(incident_id: str):
     burst_analysis = triage.burst_analysis if triage else "Triage has not run yet"
     severity = triage.severity.value if triage else "P3"
 
+    try:
+        escalation_prediction = predict_escalation_risk(
+            current_severity=severity,
+            anomaly_scores=[],
+            alert_count=len(incident.alerts),
+            has_hitl_pending=bool(incident.hitl_pending),
+        )
+    except Exception as exc:
+        raise AnomalyDetectionError(incident_id, str(exc)) from exc
+
     return {
         "incident_id": incident_id,
         "correlation_graph": graph,
@@ -860,12 +887,7 @@ async def anomaly_analysis(incident_id: str):
             "is_burst": is_burst,
             "analysis": burst_analysis,
         },
-        "escalation_prediction": predict_escalation_risk(
-            current_severity=severity,
-            anomaly_scores=[],
-            alert_count=len(incident.alerts),
-            has_hitl_pending=bool(incident.hitl_pending),
-        ),
+        "escalation_prediction": escalation_prediction,
     }
 
 
@@ -1014,7 +1036,7 @@ def get_rca(incident_id: str):
     if not incident:
         raise IncidentNotFoundError(incident_id)
     if not incident.rca:
-        raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
+        raise RCANotAvailableError(incident_id)
     return incident.rca.model_dump()
 
 
@@ -1024,7 +1046,7 @@ def get_rca_pdf(incident_id: str):
     if not incident:
         raise IncidentNotFoundError(incident_id)
     if not incident.rca:
-        raise HTTPException(status_code=404, detail=f"RCA not yet generated for incident {incident_id}")
+        raise RCANotAvailableError(incident_id)
     try:
         pdf_bytes = render_rca_pdf(incident.rca)
     except Exception as exc:

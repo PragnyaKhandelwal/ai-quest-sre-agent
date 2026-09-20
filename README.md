@@ -1,13 +1,20 @@
 # 🛰️ Governed Multi-Agent SRE Incident Triage & Runbook Remediation Agent
 
 ![CI](https://github.com/PragnyaKhandelwal/ai-quest-sre-agent/actions/workflows/ci.yml/badge.svg)
+[![Backend Deploy](https://img.shields.io/badge/backend-live%20on%20render-46E3B7)](https://sre-agent-backend-1c0i.onrender.com)
+[![Frontend Deploy](https://img.shields.io/badge/frontend-live%20on%20vercel-000000)](https://ai-quest-sre-agent.vercel.app)
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue)
 ![Powered by Lyzr ADK](https://img.shields.io/badge/powered%20by-Lyzr%20ADK-orange)
 ![License MIT](https://img.shields.io/badge/license-MIT-green)
-![Tests](https://img.shields.io/badge/tests-250%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-266%20passing-brightgreen)
 ![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)
 ![Agents](https://img.shields.io/badge/agents-4%20governed-blueviolet)
 ![Scenarios](https://img.shields.io/badge/scenarios-6%20mock-informational)
+
+CI's `deploy-backend`/`deploy-frontend` jobs (`.github/workflows/ci.yml`) automatically
+redeploy Render/Vercel on every push to `main`, once `RENDER_DEPLOY_HOOK_URL` /
+`VERCEL_TOKEN` / `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` are set as repo secrets --
+they no-op safely if those secrets aren't configured.
 
 ## ⚡ Judge Quick Start
 
@@ -220,12 +227,31 @@ npm run dev
 ```
 Open http://localhost:5173.
 
+### Installation
+
+Dependencies are declared once, in [pyproject.toml](pyproject.toml) (`[project.dependencies]`
+for the runtime set, `[project.optional-dependencies]` for `test`/`dev`/`vector` extras) --
+`backend/requirements.txt` is kept in sync and stays the file the Dockerfile and CI actually
+`pip install -r`, but pyproject.toml is the canonical version list.
+
+```bash
+# Editable install with test extras (what CI's dependency graph is validated against)
+pip install -e ".[test]"
+
+# Equivalent, and what Docker/CI actually run:
+pip install -r backend/requirements.txt
+
+# Optional: real ChromaDB + sentence-transformers vector search (see
+# agents/vector_store.py's docstring for why this isn't installed by default)
+pip install -e ".[vector]"
+```
+
 ### Run the tests
 
 ```bash
-pip install -r backend/requirements.txt   # includes pytest + httpx
-pytest                                     # 12 tests: agents/tests + backend/tests
-ruff check agents/ backend/                # lint
+pip install -e ".[test]"                   # or: pip install -r backend/requirements.txt
+pytest                                      # 213 tests: agents/tests + backend/tests
+ruff check agents/ backend/                 # lint
 ```
 
 ### Environment variables

@@ -1,3 +1,10 @@
+# pyproject.toml's [project.dependencies] is the canonical, single source
+# of truth for these version pins (Dr Agent flagged having both files with
+# divergent versions as a dependency-management conflict). This file stays
+# because Dockerfile/CI still `pip install -r backend/requirements.txt` --
+# a lower-risk install path than switching everything to `pip install -e .`
+# in this pass. Keep both in sync; pyproject.toml's own dependencies list
+# repeats the same reasoning comments for each non-obvious pin.
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4

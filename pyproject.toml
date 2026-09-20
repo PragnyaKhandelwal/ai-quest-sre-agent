@@ -1,3 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sre-agent-backend"
+version = "2.0.0"
+description = "HiDevs AI Quest PS03 -- Enterprise Cloud Incident Triage & Runbook Remediation Agent"
+requires-python = ">=3.11"
+# Canonical dependency list, kept in sync with backend/requirements.txt
+# (which stays as the file Docker/CI actually `pip install -r`s -- see that
+# file's own header comment for why both exist). Versions here are the
+# real, currently-tested pins, not a separately-drifting set.
+dependencies = [
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+    # Pinned to 2.31.0 (not 2.32.3): lyzr-automata==0.1.1 exactly pins
+    # requests==2.31.0, and pip's resolver refuses two conflicting exact
+    # pins for the same package.
+    "requests==2.31.0",
+    "python-dotenv==1.0.1",
+    "reportlab==4.2.5",
+    "lyzr-adk==0.1.12",
+    "scikit-learn==1.5.2",
+    "lyzr-automata==0.1.1",
+    "slowapi==0.1.10",
+    "hvac==2.3.0",
+    "python-json-logger==2.0.7",
+    "redis==5.0.8",
+    "fakeredis==2.23.3",
+    "pydantic-settings==2.3.4",
+    "psutil==6.0.0",
+    "prometheus-client==0.20.0",
+    "numpy==1.26.4",
+    "scipy==1.13.1",
+]
+
+[project.optional-dependencies]
+# httpx pinned to 0.27.2 (not 0.28.x): httpx 0.28 dropped the `proxies`
+# kwarg that lyzr-automata's exact pin of openai==1.3.4 still passes
+# internally -- see backend/requirements.txt for the full explanation.
+test = [
+    "pytest==8.3.4",
+    "httpx==0.27.2",
+    "pytest-cov==6.0.0",
+]
+dev = [
+    "bandit==1.9.4",
+]
+# NOT installed by default -- agents/vector_store.py's real ChromaDB +
+# sentence-transformers backend. Measured empirically: chromadb ALONE took
+# 31+ minutes to install in this project's build environment (pulls in
+# onnxruntime, grpcio, opentelemetry, a bundled Kubernetes client), and
+# sentence-transformers adds PyTorch on top of that. agents/vector_store.py
+# already degrades to TF-IDF automatically when these aren't installed --
+# `pip install ".[vector]"` opts in with zero code changes.
+vector = [
+    "chromadb==0.5.0",
+    "sentence-transformers==3.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["agents*", "backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["agents/tests", "backend/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra --cov=agents --cov=backend --cov-report=term-missing"
+filterwarnings = ["ignore::DeprecationWarning"]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

@@ -16,7 +16,11 @@ export const useIncidentStore = create(
     subscribeWithSelector((set, get) => ({
       // -- State ---------------------------------------------------------
       incidents: [],
-      incidentsLoading: true,
+      // Starts false: AlertStream.jsx falls back to this field when its
+      // `loading` prop is omitted, and its existing tests rely on an
+      // omitted prop meaning "not loading" (matching the component's
+      // original implicit-undefined-is-falsy behavior).
+      incidentsLoading: false,
       selectedIncidentId: null,
       // Full incident detail (trace/diagnosis/rca/...) for the selected
       // incident -- deliberately a SEPARATE field from `incidents`, not

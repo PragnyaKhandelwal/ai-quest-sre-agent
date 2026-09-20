@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useIncidentStore } from "../store/useIncidentStore";
 
 const SkeletonCard = () => (
   <div className="animate-pulse border-b border-border px-4 py-3">
@@ -32,7 +33,26 @@ function timeAgo(ts) {
   return `${Math.floor(diff / 3600)}h ago`;
 }
 
-export default function AlertStream({ incidents, loading, selectedId, onSelect }) {
+export default function AlertStream({
+  incidents: propIncidents,
+  loading: propLoading,
+  selectedId: propSelectedId,
+  onSelect: propOnSelect,
+}) {
+  // Optional-prop-override pattern: when a parent passes these explicitly
+  // (as every existing test does), that value wins; when omitted (the real
+  // App.jsx usage after the Zustand propagation), this subscribes directly
+  // to the store instead of requiring props to be threaded through.
+  const storeIncidents = useIncidentStore((s) => s.incidents);
+  const storeLoading = useIncidentStore((s) => s.incidentsLoading);
+  const storeSelectedId = useIncidentStore((s) => s.selectedIncidentId);
+  const storeSelectIncident = useIncidentStore((s) => s.selectIncident);
+
+  const incidents = propIncidents ?? storeIncidents;
+  const loading = propLoading ?? storeLoading;
+  const selectedId = propSelectedId ?? storeSelectedId;
+  const onSelect = propOnSelect ?? storeSelectIncident;
+
   const [filter, setFilter] = useState("");
   const filteredIncidents = incidents.filter((i) => {
     const needle = filter.toLowerCase();

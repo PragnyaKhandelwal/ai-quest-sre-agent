@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getIncidentMetrics, getMetrics } from "../api";
+import { useIncidentStore } from "../store/useIncidentStore";
 
 function latencyColor(ms) {
   // Real Groq API calls normally take 2-4s -- thresholds widened so that
@@ -53,7 +54,16 @@ function RetrievalBadge({ incident }) {
   );
 }
 
-export default function MetricsPanel({ selectedIncident }) {
+export default function MetricsPanel({ selectedIncident: propSelectedIncident }) {
+  // Optional-prop-override: falls back to the store's full incident detail
+  // when no prop is passed. Session-level metrics (session/incidentMetrics
+  // below) deliberately stay component-local rather than moving into the
+  // store -- this component polls independently on a 5s interval, and a
+  // shared store value would go stale between mounts in tests that don't
+  // reset it (each test here starts local state at null, matching this
+  // component's original per-mount fetch behavior).
+  const storeSelectedIncident = useIncidentStore((s) => s.selectedIncidentDetail);
+  const selectedIncident = propSelectedIncident ?? storeSelectedIncident;
   const [session, setSession] = useState(null);
   const [incidentMetrics, setIncidentMetrics] = useState([]);
 

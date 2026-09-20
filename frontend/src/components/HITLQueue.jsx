@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useIncidentStore } from "../store/useIncidentStore";
 
 function useCountdown(expiresAt) {
   const [remaining, setRemaining] = useState(Math.max(0, expiresAt - Date.now() / 1000));
@@ -89,7 +90,26 @@ function HITLCard({ incident_id, request, onApprove, onReject, busy }) {
   );
 }
 
-export default function HITLQueue({ pending, onApprove, onReject, busyId }) {
+export default function HITLQueue({
+  pending: propPending,
+  onApprove: propOnApprove,
+  onReject: propOnReject,
+  busyId: propBusyId,
+}) {
+  // Optional-prop-override, same pattern as AlertStream.jsx: falls back to
+  // the store's real `pendingHITL` field (populated via GET /hitl/pending),
+  // NOT derived from `incidents` -- that summary list lacks the
+  // `request`/`action`/`expires_at` shape HITLCard needs to render.
+  const storePending = useIncidentStore((s) => s.pendingHITL);
+  const storeApprove = useIncidentStore((s) => s.approveHITL);
+  const storeReject = useIncidentStore((s) => s.rejectHITL);
+  const storeBusyId = useIncidentStore((s) => s.busyHitlId);
+
+  const pending = propPending ?? storePending;
+  const onApprove = propOnApprove ?? storeApprove;
+  const onReject = propOnReject ?? storeReject;
+  const busyId = propBusyId ?? storeBusyId;
+
   return (
     <div className="flex flex-col h-full bg-panel border-l border-border">
       <div className="px-4 py-3 border-b border-border flex items-center justify-between flex-wrap gap-x-2 gap-y-1">

@@ -154,3 +154,69 @@ jobs:
         with:
           name: security-report
           path: bandit-report.json
+
+  # -- Job 7: CD - Deploy Backend (Render) --------------------------------------
+  # Only fires on a real push to main (never on a PR, and never on a push to
+  # develop) -- gated on the jobs that actually verify the backend is
+  # buildable and passes its tests. Safe to merge even before
+  # RENDER_DEPLOY_HOOK_URL is configured in this repo's secrets: it detects
+  # the missing secret and no-ops instead of failing the job.
+  deploy-backend:
+    name: Deploy Backend (Render)
+    runs-on: ubuntu-latest
+    needs: [backend-test, lint, docker-build]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      # Writes to $GITHUB_ENV (not a step-scoped `env:` block) so the next
+      # step -- which needs to know whether a deploy actually happened --
+      # can read it too; a step's own `env:` doesn't carry over to later
+      # steps, and using `secrets` directly in a step's `if:` is unreliable.
+      - name: Trigger Render deploy hook
+        run: |
+          if [ -z "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            echo "RENDER_DEPLOY_HOOK_URL not set, skipping backend deploy."
+            echo "RENDER_DEPLOYED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          curl -f -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+          echo "RENDER_DEPLOYED=true" >> "$GITHUB_ENV"
+
+      - name: Verify backend health
+        if: ${{ env.RENDER_DEPLOYED == 'true' }}
+        run: |
+          sleep 30
+          curl -f https://sre-agent-backend-1c0i.onrender.com/health || exit 1
+
+  # -- Job 8: CD - Deploy Frontend (Vercel) -------------------------------------
+  # Same graceful no-op pattern as deploy-backend when Vercel secrets aren't
+  # configured -- gated on the jobs that verify the frontend actually builds
+  # and passes its own test suite first.
+  deploy-frontend:
+    name: Deploy Frontend (Vercel)
+    runs-on: ubuntu-latest
+    needs: [frontend-build, frontend-test]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Vercel
+        run: |
+          if [ -z "${{ secrets.VERCEL_TOKEN }}" ] || [ -z "${{ secrets.VERCEL_ORG_ID }}" ] || [ -z "${{ secrets.VERCEL_PROJECT_ID }}" ]; then
+            echo "VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID not set, skipping frontend deploy."
+            echo "VERCEL_DEPLOYED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          npm install --global vercel@latest
+          vercel pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
+          vercel build --prod --token="${{ secrets.VERCEL_TOKEN }}"
+          vercel deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}"
+          echo "VERCEL_DEPLOYED=true" >> "$GITHUB_ENV"
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Verify frontend health
+        if: ${{ env.VERCEL_DEPLOYED == 'true' }}
+        run: curl -f https://ai-quest-sre-agent.vercel.app/ || exit 1

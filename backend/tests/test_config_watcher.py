@@ -116,4 +116,6 @@ def test_config_live_patch_updates_and_resets(client: TestClient):
 def test_config_live_patch_rejects_disallowed_key(client: TestClient):
     r = client.patch("/config/live", json={"lyzr_api_key": "sneaky"})
     assert r.status_code == 422
-    assert r.json()["detail"]["error"] == "CONFIG_KEY_NOT_ALLOWED"
+    data = r.json()
+    assert data["error"] == "CONFIG_KEY_NOT_ALLOWED"
+    assert data["detail"]["key"] == "lyzr_api_key"

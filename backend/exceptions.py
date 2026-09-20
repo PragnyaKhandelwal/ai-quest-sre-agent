@@ -172,3 +172,78 @@ class SecretNotFoundError(SREAgentException):
             f"Required secret '{key}' not found in {provider}",
             {"key": key, "provider": provider, "hint": f"Set {key} in your environment or secret manager"},
         )
+
+
+# -- Config exceptions -------------------------------------------------------
+class ConfigKeyNotAllowedError(SREAgentException):
+    status_code = 422
+    error_code = "CONFIG_KEY_NOT_ALLOWED"
+
+    def __init__(self, key: str, allowed_keys: list):
+        super().__init__(
+            f"Config key '{key}' is not allowed to be hot-reloaded",
+            {"key": key, "allowed_keys": allowed_keys},
+        )
+
+
+# -- Vector store exceptions --------------------------------------------------
+class VectorStoreError(SREAgentException):
+    status_code = 503
+    error_code = "VECTOR_STORE_ERROR"
+
+    def __init__(self, reason: str):
+        super().__init__(
+            f"Vector store operation failed: {reason}",
+            {
+                "reason": reason,
+                "hint": "agents/vector_store.py normally falls back to TF-IDF retrieval automatically; this reflects a deeper failure",
+            },
+        )
+
+
+# -- Anomaly detection exceptions ---------------------------------------------
+class AnomalyDetectionError(SREAgentException):
+    status_code = 503
+    error_code = "ANOMALY_DETECTION_ERROR"
+
+    def __init__(self, incident_id: str, reason: str):
+        super().__init__(
+            f"Anomaly detection failed for incident '{incident_id}': {reason}",
+            {"incident_id": incident_id, "reason": reason},
+        )
+
+
+# -- Tool input exceptions -----------------------------------------------------
+class ToolInputValidationError(SREAgentException):
+    status_code = 422
+    error_code = "TOOL_INPUT_INVALID"
+
+    def __init__(self, tool_name: str, reason: str):
+        super().__init__(
+            f"Invalid input for tool '{tool_name}': {reason}",
+            {"tool_name": tool_name, "reason": reason},
+        )
+
+
+# -- Alert ingestion exceptions -------------------------------------------------
+class EmptyAlertBatchError(SREAgentException):
+    status_code = 400
+    error_code = "EMPTY_ALERT_BATCH"
+
+    def __init__(self):
+        super().__init__(
+            "At least one alert is required.",
+            {"hint": "POST /alerts/ingest requires a non-empty 'alerts' list"},
+        )
+
+
+# -- RCA exceptions -------------------------------------------------------------
+class RCANotAvailableError(SREAgentException):
+    status_code = 404
+    error_code = "RCA_NOT_AVAILABLE"
+
+    def __init__(self, incident_id: str):
+        super().__init__(
+            f"RCA not yet generated for incident {incident_id}",
+            {"incident_id": incident_id, "hint": "RCA is generated once the incident reaches POST_MORTEM"},
+        )

@@ -393,12 +393,31 @@ Project Settings → General → Root Directory, or in the "Configure Project" s
 import). With Root Directory scoped to `frontend`, Vercel only ever sees the Vite app.
 Then set `VITE_BACKEND_URL` to your deployed Render URL.
 
-**CI/CD:** `.github/workflows/ci.yml` runs on every push to `main`/`develop` and every PR
-into `main`, across 6 jobs: `backend-test` (pytest, 200+ tests, 90%+ coverage),
-`lint` (ruff), `frontend-build` (vite build), `frontend-test` (Vitest + React Testing
-Library, 36 tests), `docker-build` (builds the backend image and health-checks it), and
-`security` (Bandit static scan, report uploaded as an artifact). See `CONTRIBUTING.md` and
-the badge at the top of this file for current status.
+## 🚀 CI/CD Pipeline — 8 Jobs
+
+`.github/workflows/ci.yml` runs on every push to `main`/`develop` and every PR into `main`.
+Every push to `main` triggers the full pipeline, including two dedicated CD jobs:
+
+| Job | What it does | Status |
+|---|---|---|
+| backend-test | pytest, 91% coverage | ✅ |
+| lint | ruff code quality | ✅ |
+| frontend-build | Vite production build | ✅ |
+| frontend-test | Vitest 53 tests | ✅ |
+| docker-build | Docker image + health check | ✅ |
+| security | Bandit security scan | ✅ |
+| **deploy-backend** | **Auto-deploy to Render on main push** | ✅ CD |
+| **deploy-frontend** | **Auto-deploy to Vercel on main push** | ✅ CD |
+
+CD is fully automated — every merged PR deploys to production. `deploy-backend` and
+`deploy-frontend` only run on a real push to `main` (never on a PR), and are gated on the
+jobs that verify each side actually builds and passes its tests first
+(`needs: [backend-test, lint, docker-build]` / `needs: [frontend-build, frontend-test]`).
+They trigger Render's deploy hook and Vercel's CLI deploy via `RENDER_DEPLOY_HOOK_URL` /
+`VERCEL_TOKEN` / `VERCEL_ORG_ID` / `VERCEL_PROJECT_ID` repo secrets, then verify the live
+`/health` endpoint and homepage respond -- and no-op safely (skip, don't fail) if those
+secrets aren't configured yet. Live URLs updated automatically after every push to main.
+See `CONTRIBUTING.md` and the badge at the top of this file for current status.
 
 ### Redis Setup (optional -- for persistent state)
 
@@ -477,7 +496,7 @@ sleeping, with no code changes required.
 |---|---|---|---|
 | Lyzr Agent Orchestration | 30% | `lyzr-adk` SDK + `lyzr-automata` `LinearSyncPipeline`, 4-agent pipeline, clean Environment/Agent/Inference separation (`agents/lyzr_environment.py`/`lyzr_agents.py`/`lyzr_inference.py`) | ✅ |
 | DevOps Safety & Reliability | 30% | HITL gate, Hallucination Guard, typed `RemediationAction` schema with rollback commands, explicit tool-calling contracts (`agents/tools.py`) | ✅ |
-| Code Quality & Architecture | 20% | pytest 200+ tests (unit + integration) + 41 Vitest frontend tests, 90%+ backend coverage, 6-job GitHub Actions CI, ruff lint, Docker | ✅ |
+| Code Quality & Architecture | 20% | pytest 213 tests (unit + integration) + 53 Vitest frontend tests, 91% backend coverage, 8-job GitHub Actions CI/CD (incl. auto-deploy to Render/Vercel), ruff lint, Docker | ✅ |
 | SRE Experience & UI | 20% | SSE dashboard, metrics panel, AIMS audit log panel, decision graph, voice briefing, RCA PDF export, HITL queue | ✅ |
 
 ## Evaluation checkpoints

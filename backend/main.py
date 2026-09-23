@@ -277,6 +277,7 @@ async def root():
 # Health & meta
 # ---------------------------------------------------------------------------
 @api_router.get("/health")
+@api_router.head("/health")
 async def health():
     """Deep health check -- verifies every real dependency is live, not
     just that the process is running. Used by the Docker healthcheck,
